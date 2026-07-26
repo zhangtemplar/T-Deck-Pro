@@ -266,6 +266,7 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN_CALENDAR_ID,   &img_calendar,   "Calendar",95,   101},
     {SCREEN_DICTIONARY_ID, &img_dictionary, "Dict",    167,  101},
     {SCREEN_VOICE_AI_ID,   &img_voice_ai,   "AI Chat", 23,   189},
+    {SCREEN_MUSIC_ID,      &img_PCM5102,    "Music",   167,  189},
 };
 
 static void menu_btn_event_cb(lv_event_t *e)
@@ -2968,15 +2969,24 @@ static lv_timer_t *menu_timer = NULL;
 
 static void indev_get_gesture_dir(lv_timer_t *t)
 {
+    if (!ui_get_gesture_dir) return;
     lv_indev_t * touch_indev = lv_indev_get_next(NULL);
     lv_dir_t dir = lv_indev_get_gesture_dir(touch_indev);
 
     if(dir == LV_DIR_RIGHT) { // right
         ui_get_gesture_dir(LV_DIR_RIGHT);
-    } 
+    }
     else if(dir == LV_DIR_LEFT) { // left
         ui_get_gesture_dir(LV_DIR_LEFT);
     }
+}
+
+extern "C" void ui_set_gesture_callback(ui_indev_read_cb cb)
+{
+    ui_get_gesture_dir = cb;
+    if (!touch_chk_timer) return;
+    if (cb) lv_timer_resume(touch_chk_timer);
+    else    lv_timer_pause(touch_chk_timer);
 }
 
 static void menu_keypay_get_event(lv_timer_t *t)
@@ -3147,6 +3157,12 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_voice_ai;
     scr_mgr_register(SCREEN_VOICE_AI_ID, &screen_voice_ai);
+
+    extern scr_lifecycle_t screen_music;
+    scr_mgr_register(SCREEN_MUSIC_ID, &screen_music);
+
+    extern scr_lifecycle_t screen_music_browse;
+    scr_mgr_register(SCREEN_MUSIC_BROWSE_ID, &screen_music_browse);
 
     scr_mgr_switch(SCREEN0_ID, false); // set root screen
     scr_mgr_set_anim(LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT);

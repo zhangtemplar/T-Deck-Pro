@@ -74,6 +74,8 @@ enum {
     SCREEN_DICTIONARY_ID,
     SCREEN_GPS_ENHANCED_ID,
     SCREEN_VOICE_AI_ID,
+    SCREEN_MUSIC_ID,
+    SCREEN_MUSIC_BROWSE_ID,
 };
 
 typedef void (*ui_indev_read_cb)(int);
@@ -142,6 +144,10 @@ typedef struct {
  * *******************************************************************************/
 void ui_deckpro_entry(void);
 lv_obj_t *scr_back_btn_create(lv_obj_t *parent, const char *text, lv_event_cb_t cb);
+
+/* Sub-screens use this to receive touch swipe gestures (LV_DIR_LEFT / LV_DIR_RIGHT).
+ * Pass NULL on screen exit to stop receiving events. */
+void ui_set_gesture_callback(ui_indev_read_cb cb);
 
 #ifdef __cplusplus
 } /*extern "C"*/
