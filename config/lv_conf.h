@@ -48,15 +48,19 @@
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc()` and `lv_mem_free()`*/
 #define LV_MEM_CUSTOM 0
 #if LV_MEM_CUSTOM == 0
-    /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)*/
-    #define LV_MEM_SIZE (48U * 1024U)          /*[bytes]*/
+    /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)
+     *Enlarged and PSRAM-backed (below): TinyTTF/stb_truetype rasterizes CJK
+     *glyphs through lv_mem_alloc(); the old 48 kB internal pool overflowed on
+     *the first Chinese glyph and LV_ASSERT_MALLOC halted the device.*/
+    #define LV_MEM_SIZE (512U * 1024U)          /*[bytes]*/
 
     /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
     #define LV_MEM_ADR 0     /*0: unused*/
     /*Instead of an address give a memory allocator that will be called to get a memory pool for LVGL. E.g. my_malloc*/
     #if LV_MEM_ADR == 0
-        #undef LV_MEM_POOL_INCLUDE
-        #undef LV_MEM_POOL_ALLOC
+        /*Allocate the whole LVGL pool from PSRAM so CJK glyph rasterization has room.*/
+        #define LV_MEM_POOL_INCLUDE "esp_heap_caps.h"
+        #define LV_MEM_POOL_ALLOC(size) heap_caps_malloc((size), MALLOC_CAP_SPIRAM)
     #endif
 
 #else       /*LV_MEM_CUSTOM*/
@@ -662,6 +666,14 @@
         #define LV_FREETYPE_CACHE_FT_FACES 0
         #define LV_FREETYPE_CACHE_FT_SIZES 0
     #endif
+#endif
+
+/*Tiny TTF library — render CJK glyphs on demand from a TTF on the SD card
+ *(file streaming keeps PSRAM usage tiny; see cjk_font.cpp).*/
+#define LV_USE_TINY_TTF 1
+#if LV_USE_TINY_TTF
+    /*Load TTFs from a file (via a registered lv_fs driver) instead of RAM*/
+    #define LV_TINY_TTF_FILE_SUPPORT 1
 #endif
 
 /*Rlottie library*/

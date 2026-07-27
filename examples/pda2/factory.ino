@@ -15,6 +15,7 @@
 #include <TinyGPS++.h>
 #include "lvgl.h"
 #include "ui_deckpro.h"
+#include "cjk_font.h"
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include "factory.h"
 #include "peripheral.h"
@@ -669,6 +670,10 @@ void setup()
     peri_init_st[E_PERI_TOUCH] = hyn_touch_init();
 
     lvgl_init();
+
+    /* SD is mounted (sd_care_init above) and LVGL is up: load the streaming
+     * CJK font and install it as the theme font before any screen is created. */
+    cjk_font_init();
 
     ui_deckpro_entry();
 

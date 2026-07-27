@@ -8,6 +8,7 @@
 #include "ui_deckpro_port.h"
 #include "lunar_calendar.h"
 #include <time.h>
+#include "cjk_font.h"
 
 static lv_obj_t *calendar_obj = NULL;
 static lv_obj_t *holiday_label = NULL;
@@ -193,7 +194,10 @@ static void cal_create(lv_obj_t *parent)
 
     holiday_label = lv_label_create(page_holidays);
     lv_obj_set_width(holiday_label, lv_pct(100));
-    lv_obj_set_style_text_font(holiday_label, &lv_font_montserrat_14, LV_PART_MAIN);
+    /* CJK-capable font so lunar/jieqi/holiday names in Chinese render.
+     * Coverage is limited to the font's built-in glyph set until it is
+     * regenerated with the full character set (see build docs). */
+    lv_obj_set_style_text_font(holiday_label, &g_font_cn, LV_PART_MAIN);
     lv_label_set_long_mode(holiday_label, LV_LABEL_LONG_WRAP);
     lv_label_set_text(holiday_label, "Loading...");
 
