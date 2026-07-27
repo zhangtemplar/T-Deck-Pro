@@ -258,15 +258,15 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN6_ID,  &img_batt,    "Battery",  167,    101},
     {SCREEN7_ID,  &img_touch,   "Input",    23,     189},
     {SCREEN8_ID,  &img_A7682E,  "A7682E",   95,     189},
-    {SCREEN9_ID,  &img_lora,    "Shutdown", 167,    189},
-    {SCREEN12_ID,           &img_motor,   "Motor",    23,     13},  // Page two
-    {SCREEN11_ID,           &img_PCM5102, "Sleep",    95,     13},
-    {SCREEN_CALCULATOR_ID, &img_calculator, "Calc",   167,    13},
-    {SCREEN_WEATHER_ID,    &img_weather,    "Weather", 23,   101},
-    {SCREEN_CALENDAR_ID,   &img_calendar,   "Calendar",95,   101},
-    {SCREEN_DICTIONARY_ID, &img_dictionary, "Dict",    167,  101},
-    {SCREEN_VOICE_AI_ID,   &img_voice_ai,   "AI Chat", 23,   189},
-    {SCREEN_MUSIC_ID,      &img_PCM5102,    "Music",   167,  189},
+    {SCREEN12_ID, &img_motor,   "Motor",    167,    189},  // fills page-1 (Shutdown hidden)
+    {SCREEN11_ID,           &img_moon,    "Sleep",    23,    13},  // Page two
+    {SCREEN_CALCULATOR_ID, &img_calculator, "Calc",   95,    13},
+    {SCREEN_WEATHER_ID,    &img_weather,    "Weather", 167,  13},
+    {SCREEN_CALENDAR_ID,   &img_calendar,   "Calendar",23,   101},
+    {SCREEN_DICTIONARY_ID, &img_dictionary, "Dict",    95,   101},
+    {SCREEN_VOICE_AI_ID,   &img_voice_ai,   "AI Chat", 167,  101},
+    {SCREEN_RECORDER_ID,   &img_recorder,   "Recorder",23,   189},
+    {SCREEN_MUSIC_ID,      &img_PCM5102,    "Music",   95,   189},
 };
 
 static void menu_btn_event_cb(lv_event_t *e)
@@ -3157,6 +3157,9 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_voice_ai;
     scr_mgr_register(SCREEN_VOICE_AI_ID, &screen_voice_ai);
+
+    extern scr_lifecycle_t screen_recorder;
+    scr_mgr_register(SCREEN_RECORDER_ID, &screen_recorder);
 
     extern scr_lifecycle_t screen_music;
     scr_mgr_register(SCREEN_MUSIC_ID, &screen_music);

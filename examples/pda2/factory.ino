@@ -715,6 +715,8 @@ void loop()
     gps_keyboard_poll();
     extern void voiceai_keyboard_poll();
     voiceai_keyboard_poll();
+    extern void recorder_keyboard_poll();
+    recorder_keyboard_poll();
     bq25896_runtime_maintain();
 
     audio.loop();

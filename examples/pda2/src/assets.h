@@ -27,6 +27,8 @@ LV_IMG_DECLARE(img_weather)
 LV_IMG_DECLARE(img_calendar)
 LV_IMG_DECLARE(img_dictionary)
 LV_IMG_DECLARE(img_voice_ai)
+LV_IMG_DECLARE(img_recorder)
+LV_IMG_DECLARE(img_moon)
 
 // font
 LV_FONT_DECLARE(Font_Mono_Bold_14)
