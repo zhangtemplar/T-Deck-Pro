@@ -2,6 +2,7 @@
 #include <Adafruit_TCA8418.h>
 #include "utilities.h"
 #include "peripheral.h"
+#include "screenshot.h"
 
 #define KEYPAD_ROWS 4
 #define KEYPAD_COLS 10
@@ -43,6 +44,7 @@ int keypad_state = KEYPAD_RELEASE;
 bool keypad_update = false;
 static bool sym_active = false;
 static bool sym_lock = false;
+static bool alt_held = false;   /* true only while the ALT key is physically down */
 
 bool keypad_init(int address)
 {
@@ -115,12 +117,21 @@ void keypad_loop(void)
     }
 
     if (row == KEY_ALT_ROW && col == KEY_ALT_COL) {
+        alt_held = (state == KEYPAD_PRESS);
         sym_active = (state == KEYPAD_PRESS);
         Serial.printf("[KBD] alt=%d\n", sym_active);
         return;
     }
 
     if (state == KEYPAD_PRESS) {
+        /* Alt + P = screenshot (physical 'p' is row 0, col 9). Handled before
+         * character mapping so it doesn't also emit the sym-layer character. */
+        if (alt_held && row == 0 && col == 9) {
+            Serial.println("[KBD] screenshot (Alt+P)");
+            screenshot_capture();
+            return;
+        }
+
         c = (sym_active || sym_lock) ? keymap_sym[row][col] : keymap[row][col];
         if (sym_active && !sym_lock) sym_active = false;
 
