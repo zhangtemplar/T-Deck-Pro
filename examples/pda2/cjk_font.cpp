@@ -24,8 +24,10 @@ extern void shared_spi_lock(void);
 extern void shared_spi_unlock(void);
 extern void shared_spi_prepare_device(int cs_pin);
 
-/* Pre-rasterized bitmap font (produced by tools/rasterize_cjk_font.py). */
-#define CJK_RASTER_PATH "/fonts/cjk_16.bin"
+/* Pre-rasterized bitmap fonts (produced by tools/rasterize_cjk_font.py).
+ * cjk_14 matches the Montserrat-14 body font; cjk_16 is a spare/fallback. */
+#define CJK_RASTER_PATH_14 "/fonts/cjk_14.bin"
+#define CJK_RASTER_PATH_16 "/fonts/cjk_16.bin"
 
 /* Streaming TTF fallback: same path/filename used by LilyGoLib/examples/pda. */
 #define CJK_TTF_PATH   "/fonts/dict_font.ttf"
@@ -173,8 +175,8 @@ typedef struct {
     int32_t                   last_idx;  /* cache: dsc+bitmap are called in pairs */
 } cjk_raster_ctx_t;
 
-static cjk_raster_ctx_t s_raster_ctx;
-static lv_font_t        s_raster_font;
+static cjk_raster_ctx_t s_raster_ctx_14, s_raster_ctx_16;
+static lv_font_t        s_raster_font_14, s_raster_font_16;
 
 static int32_t cjk_raster_find(cjk_raster_ctx_t *ctx, uint32_t letter)
 {
@@ -222,19 +224,19 @@ static const uint8_t *cjk_raster_get_bitmap(const lv_font_t *font, uint32_t lett
     return ctx->bitmaps + ctx->glyphs[idx].bmp_off;
 }
 
-/* Load the pre-rasterized blob into PSRAM and wire up a custom lv_font_t.
- * Returns &s_raster_font on success, NULL if the file is missing/invalid. */
-static lv_font_t *cjk_load_raster(const char *path)
+/* Load a pre-rasterized blob into PSRAM and wire up the caller's lv_font_t/ctx.
+ * Returns true on success, false if the file is missing/invalid. */
+static bool cjk_load_raster(const char *path, cjk_raster_ctx_t *ctx, lv_font_t *font)
 {
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);
     File f = SD.open(path, FILE_READ);
-    if (!f) { shared_spi_unlock(); return NULL; }
+    if (!f) { shared_spi_unlock(); return false; }
     size_t sz = f.size();
-    if (sz < sizeof(cjk_raster_hdr_t)) { f.close(); shared_spi_unlock(); return NULL; }
+    if (sz < sizeof(cjk_raster_hdr_t)) { f.close(); shared_spi_unlock(); return false; }
 
     uint8_t *blob = (uint8_t *)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
-    if (!blob) { f.close(); shared_spi_unlock(); Serial.println("[CJK] raster: PSRAM alloc failed"); return NULL; }
+    if (!blob) { f.close(); shared_spi_unlock(); Serial.printf("[CJK] raster %s: PSRAM alloc failed\n", path); return false; }
 
     f.seek(0);
     size_t got = 0;
@@ -248,13 +250,13 @@ static lv_font_t *cjk_load_raster(const char *path)
     f.close();
     shared_spi_unlock();
 
-    if (got != sz) { heap_caps_free(blob); Serial.println("[CJK] raster: read incomplete"); return NULL; }
+    if (got != sz) { heap_caps_free(blob); Serial.printf("[CJK] raster %s: read incomplete\n", path); return false; }
 
     cjk_raster_hdr_t *h = (cjk_raster_hdr_t *)blob;
     if (memcmp(h->magic, "CJK1", 4) != 0 || h->version != 1 || h->bpp != 1) {
         heap_caps_free(blob);
-        Serial.println("[CJK] raster: bad magic/version");
-        return NULL;
+        Serial.printf("[CJK] raster %s: bad magic/version\n", path);
+        return false;
     }
     /* Bounds-check the three tables against the file size. */
     uint64_t cp_end  = (uint64_t)h->codepoints_off + (uint64_t)h->glyph_count * 4;
@@ -262,30 +264,30 @@ static lv_font_t *cjk_load_raster(const char *path)
     uint64_t bm_end  = (uint64_t)h->bitmap_off + (uint64_t)h->bitmap_size;
     if (h->glyph_count == 0 || cp_end > sz || gl_end > sz || bm_end > sz) {
         heap_caps_free(blob);
-        Serial.println("[CJK] raster: table bounds invalid");
-        return NULL;
+        Serial.printf("[CJK] raster %s: table bounds invalid\n", path);
+        return false;
     }
 
-    s_raster_ctx.blob        = blob;
-    s_raster_ctx.cps         = (const uint32_t *)(blob + h->codepoints_off);
-    s_raster_ctx.glyphs      = (const cjk_raster_glyph_t *)(blob + h->glyphs_off);
-    s_raster_ctx.bitmaps     = blob + h->bitmap_off;
-    s_raster_ctx.count       = h->glyph_count;
-    s_raster_ctx.last_letter = 0xFFFFFFFFu;
-    s_raster_ctx.last_idx    = -1;
+    ctx->blob        = blob;
+    ctx->cps         = (const uint32_t *)(blob + h->codepoints_off);
+    ctx->glyphs      = (const cjk_raster_glyph_t *)(blob + h->glyphs_off);
+    ctx->bitmaps     = blob + h->bitmap_off;
+    ctx->count       = h->glyph_count;
+    ctx->last_letter = 0xFFFFFFFFu;
+    ctx->last_idx    = -1;
 
-    memset(&s_raster_font, 0, sizeof(s_raster_font));
-    s_raster_font.get_glyph_dsc    = cjk_raster_get_dsc;
-    s_raster_font.get_glyph_bitmap = cjk_raster_get_bitmap;
-    s_raster_font.line_height      = h->line_height;
-    s_raster_font.base_line        = h->base_line;
-    s_raster_font.subpx            = LV_FONT_SUBPX_NONE;
-    s_raster_font.dsc              = &s_raster_ctx;
-    s_raster_font.fallback         = NULL;
+    memset(font, 0, sizeof(*font));
+    font->get_glyph_dsc    = cjk_raster_get_dsc;
+    font->get_glyph_bitmap = cjk_raster_get_bitmap;
+    font->line_height      = h->line_height;
+    font->base_line        = h->base_line;
+    font->subpx            = LV_FONT_SUBPX_NONE;
+    font->dsc              = ctx;
+    font->fallback         = NULL;
 
-    Serial.printf("[CJK] raster: %u glyphs, %u KB in PSRAM (size=%dpx)\n",
-                  (unsigned)h->glyph_count, (unsigned)(sz / 1024), (int)h->px_size);
-    return &s_raster_font;
+    Serial.printf("[CJK] raster %s: %u glyphs, %u KB in PSRAM (size=%dpx)\n",
+                  path, (unsigned)h->glyph_count, (unsigned)(sz / 1024), (int)h->px_size);
+    return true;
 }
 
 /* ------------------------------- init ------------------------------------ */
@@ -307,13 +309,19 @@ void cjk_font_init(void)
     g_font_cn = lv_font_montserrat_14;
     g_font_cn.fallback = NULL;
 
-    /* 1) Preferred: pre-rasterized bitmaps in PSRAM (instant, no rasterization). */
-    lv_font_t *raster = cjk_load_raster(CJK_RASTER_PATH);
+    /* 1) Preferred: pre-rasterized bitmaps in PSRAM (instant, no rasterization).
+     *    cjk_14 is the body-matched size; cjk_16 is a spare/fallback. Either may
+     *    be absent — whatever's present is used. */
+    lv_font_t *r14 = cjk_load_raster(CJK_RASTER_PATH_14, &s_raster_ctx_14, &s_raster_font_14)
+                     ? &s_raster_font_14 : NULL;
+    lv_font_t *r16 = cjk_load_raster(CJK_RASTER_PATH_16, &s_raster_ctx_16, &s_raster_font_16)
+                     ? &s_raster_font_16 : NULL;
+    bool have_raster = (r14 || r16);
 
     /* 2) TTF fallback. With a raster font present, keep it light (streaming) so a
      *    rare missing glyph still renders (slowly). Without one, fall back to the
      *    old strategy: whole TTF in PSRAM if it fits, else streaming. */
-    if (!raster) {
+    if (!have_raster) {
         size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
         size_t fsize = 0;
         shared_spi_lock();
@@ -355,11 +363,16 @@ void cjk_font_init(void)
     }
 
     /* 3) Build the glyph-source chain and install it as the theme font.
-     *    montserrat (ASCII) -> raster (common CJK) -> TTF (rare CJK). */
+     *    montserrat (ASCII) -> cjk_14 -> cjk_16 -> TTF (rare CJK).
+     *    s_cjk_ttf may be NULL if the TTF is absent; that just ends the chain. */
     lv_font_t *cjk_primary;
-    if (raster) {
-        raster->fallback = s_cjk_ttf;   /* may be NULL if the TTF is absent */
-        cjk_primary = raster;
+    if (r14) {
+        r14->fallback = r16 ? r16 : s_cjk_ttf;
+        if (r16) r16->fallback = s_cjk_ttf;
+        cjk_primary = r14;
+    } else if (r16) {
+        r16->fallback = s_cjk_ttf;
+        cjk_primary = r16;
     } else {
         cjk_primary = s_cjk_ttf;
     }

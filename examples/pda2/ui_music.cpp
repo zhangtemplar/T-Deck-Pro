@@ -452,17 +452,14 @@ static void browse_render_page()
     int start = br_page * MUSIC_PAGE_SIZE;
     int end = start + MUSIC_PAGE_SIZE;
     if (end > br_count) end = br_count;
-    Serial.printf("[browse] render page %d: items %d..%d of %d\n", br_page, start, end, br_count);
     for (int i = start; i < end; i++) {
         const char *icon = br_type[i] == BR_DIR ? LV_SYMBOL_DIRECTORY :
                            br_type[i] == BR_M3U ? LV_SYMBOL_LIST :
                            LV_SYMBOL_AUDIO;
-        Serial.printf("[browse]   add item %d: '%s'\n", i, br_name[i]);
         lv_obj_t *btn = lv_list_add_btn(br_list, icon, br_name[i]);
         lv_obj_add_event_cb(btn, browse_item_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
     if (br_pagelbl) lv_label_set_text_fmt(br_pagelbl, "%d/%d", br_page + 1, browse_pages());
-    Serial.println("[browse] render page done");
 }
 
 static void browse_refresh()
@@ -494,7 +491,6 @@ static void browse_refresh()
     }
     if (d) d.close();
     shared_spi_unlock();
-    Serial.printf("[browse] SD scan done, %d entries in %s\n", br_count, browse_dir);
 
     if (br_page >= browse_pages()) br_page = browse_pages() - 1;
     if (br_page < 0) br_page = 0;
@@ -573,7 +569,6 @@ static void browse_gesture_cb(int dir)
 
 static void browse_create(lv_obj_t *parent)
 {
-    Serial.println("[browse] create begin");
     scr_back_btn_create(parent, "Browse", browse_back_cb);
 
     br_pagelbl = lv_label_create(parent);
@@ -601,9 +596,7 @@ static void browse_create(lv_obj_t *parent)
      * to the font's glyph set until regenerated). */
     lv_obj_set_style_text_font(br_list, &g_font_cn, LV_PART_MAIN);
 
-    Serial.println("[browse] widgets built, calling browse_refresh");
     browse_refresh();
-    Serial.println("[browse] create end");
 }
 
 static void browse_entry(void)
