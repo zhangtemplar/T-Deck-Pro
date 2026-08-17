@@ -16,6 +16,7 @@
 #include "lvgl.h"
 #include "ui_deckpro.h"
 #include "cjk_font.h"
+#include "file_server.h"
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include "factory.h"
 #include "peripheral.h"
@@ -717,6 +718,7 @@ void loop()
     voiceai_keyboard_poll();
     extern void recorder_keyboard_poll();
     recorder_keyboard_poll();
+    file_server_loop();
     bq25896_runtime_maintain();
 
     audio.loop();

@@ -267,6 +267,7 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN_VOICE_AI_ID,   &img_voice_ai,   "AI Chat", 167,  101},
     {SCREEN_RECORDER_ID,   &img_recorder,   "Recorder",23,   189},
     {SCREEN_MUSIC_ID,      &img_PCM5102,    "Music",   95,   189},
+    {SCREEN_FILESERVER_ID, &img_SD,         "Files",   167,  189},
 };
 
 static void menu_btn_event_cb(lv_event_t *e)
@@ -408,8 +409,10 @@ static void create0(lv_obj_t *parent)
     menu_taskbar_battery_percent = lv_label_create(status_parent);
     lv_obj_set_style_text_font(menu_taskbar_battery_percent, &Font_Mono_Bold_14, LV_PART_MAIN);
 
-    //
-    page_num = MENU_BTN_NUM / 9;
+    // Two physical menu pages (menu_screen1/2), 9 icons each. page_num is the max
+    // page index: 1 when there's a second page, 0 otherwise. (MENU_BTN_NUM/9 would
+    // yield a phantom 3rd page once the count reaches 18.)
+    page_num = (MENU_BTN_NUM > 9) ? 1 : 0;
 
     menu_screen1 = lv_obj_create(parent);
     lv_obj_set_size(menu_screen1, lv_pct(100), LV_VER_RES - status_bar_height);
@@ -3166,6 +3169,9 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_music_browse;
     scr_mgr_register(SCREEN_MUSIC_BROWSE_ID, &screen_music_browse);
+
+    extern scr_lifecycle_t screen_fileserver;
+    scr_mgr_register(SCREEN_FILESERVER_ID, &screen_fileserver);
 
     scr_mgr_switch(SCREEN0_ID, false); // set root screen
     scr_mgr_set_anim(LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT);
