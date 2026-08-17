@@ -635,7 +635,9 @@
     #define LV_FS_FATFS_CACHE_SIZE 0    /*>0 to cache this number of bytes in lv_fs_read()*/
 #endif
 
-/*PNG decoder library*/
+/*PNG decoder library. Left off: LVGL's lv_png/lv_sjpg wrappers don't support
+ *LV_COLOR_DEPTH 1. The image viewer compiles lodepng/TJpgDec itself (see
+ *img_codec_png.c / img_codec_jpg.c) and renders via its own 1-bpp ditherer.*/
 #define LV_USE_PNG 0
 
 /*BMP decoder library*/

@@ -78,6 +78,7 @@ enum {
     SCREEN_MUSIC_ID,
     SCREEN_MUSIC_BROWSE_ID,
     SCREEN_FILESERVER_ID,
+    SCREEN_IMAGE_ID,
 };
 
 typedef void (*ui_indev_read_cb)(int);

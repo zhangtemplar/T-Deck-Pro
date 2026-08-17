@@ -234,8 +234,6 @@ static const char *line_full_format(int max_c, const char *str1, const char *str
 
 static ui_indev_read_cb ui_get_gesture_dir = NULL;
 
-static lv_obj_t *menu_screen1;
-static lv_obj_t *menu_screen2;
 static lv_obj_t *ui_Panel4;
 
 static lv_obj_t * menu_taskbar = NULL;
@@ -268,7 +266,16 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN_RECORDER_ID,   &img_recorder,   "Recorder",23,   189},
     {SCREEN_MUSIC_ID,      &img_PCM5102,    "Music",   95,   189},
     {SCREEN_FILESERVER_ID, &img_SD,         "Files",   167,  189},
+    {SCREEN_IMAGE_ID,      &img_image,      "Images",  23,    13},  // Page three
 };
+
+/* The menu holds MENU_PAGE_ITEMS icons per page and grows a page at a time as
+ * apps are added; menu_pages[] and the dot indicator are both sized from the
+ * length of menu_btn_list. */
+#define MENU_PAGE_ITEMS 9
+#define MENU_PAGE_NUM   ((MENU_BTN_NUM + MENU_PAGE_ITEMS - 1) / MENU_PAGE_ITEMS)
+
+static lv_obj_t *menu_pages[MENU_PAGE_NUM];
 
 static void menu_btn_event_cb(lv_event_t *e)
 {
@@ -276,38 +283,35 @@ static void menu_btn_event_cb(lv_event_t *e)
     scr_mgr_push(tgr->idx, false);
 }
 
+/* Show page `pg`, hiding the rest, and fill the matching indicator dot. */
+static void menu_show_page(int pg)
+{
+    page_curr = pg;
+    for(int i = 0; i < (int)MENU_PAGE_NUM; i++) {
+        if(!menu_pages[i]) continue;
+        if(i == pg) lv_obj_clear_flag(menu_pages[i], LV_OBJ_FLAG_HIDDEN);
+        else        lv_obj_add_flag(menu_pages[i], LV_OBJ_FLAG_HIDDEN);
+
+        if(ui_Panel4) {
+            lv_obj_t *dot = lv_obj_get_child(ui_Panel4, i);
+            if(dot)
+                lv_obj_set_style_bg_color(dot,
+                    (i == pg) ? lv_color_hex(0x000000) : lv_color_hex(0xFFFFFF),
+                    LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+    }
+}
+
 static void menu_get_gesture_dir(int dir)
 {
-    if(MENU_BTN_NUM <= 9) return;
+    if(MENU_PAGE_NUM <= 1) return;
 
     if(dir == LV_DIR_LEFT) {
-        if(page_curr < page_num){
-            page_curr++;
-            // ui_disp_full_refr();
-        }
-        else{
-            return ;
-        }
+        if(page_curr >= page_num) return;
+        menu_show_page(page_curr + 1);
     } else if(dir == LV_DIR_RIGHT) {
-        if(page_curr > 0){
-            page_curr--;
-        }
-        else{
-            return ;
-        }
-    }   
-
-    if(page_curr == 1) {
-        lv_obj_clear_flag(menu_screen2, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(menu_screen1, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_style_bg_color(lv_obj_get_child(ui_Panel4, 0), lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lv_obj_get_child(ui_Panel4, 1), lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    } else if(page_curr == 0) {
-        lv_obj_clear_flag(menu_screen1, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(menu_screen2, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_style_bg_color(lv_obj_get_child(ui_Panel4, 0), lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lv_obj_get_child(ui_Panel4, 1), lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        if(page_curr <= 0) return;
+        menu_show_page(page_curr - 1);
     }
 }
 
@@ -409,32 +413,21 @@ static void create0(lv_obj_t *parent)
     menu_taskbar_battery_percent = lv_label_create(status_parent);
     lv_obj_set_style_text_font(menu_taskbar_battery_percent, &Font_Mono_Bold_14, LV_PART_MAIN);
 
-    // Two physical menu pages (menu_screen1/2), 9 icons each. page_num is the max
-    // page index: 1 when there's a second page, 0 otherwise. (MENU_BTN_NUM/9 would
-    // yield a phantom 3rd page once the count reaches 18.)
-    page_num = (MENU_BTN_NUM > 9) ? 1 : 0;
+    // page_num is the highest page index (0-based) the gesture handler may reach.
+    page_num = (int)MENU_PAGE_NUM - 1;
 
-    menu_screen1 = lv_obj_create(parent);
-    lv_obj_set_size(menu_screen1, lv_pct(100), LV_VER_RES - status_bar_height);
-    lv_obj_set_style_bg_color(menu_screen1, DECKPRO_COLOR_BG, LV_PART_MAIN);
-    lv_obj_set_scrollbar_mode(menu_screen1, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_border_width(menu_screen1, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(menu_screen1, DECKPRO_COLOR_FG, LV_PART_MAIN);
-    lv_obj_set_style_border_side(menu_screen1, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(menu_screen1, 0, LV_PART_MAIN);
-    lv_obj_align(menu_screen1, LV_ALIGN_BOTTOM_MID, 0, 0);
-    // lv_obj_add_flag(menu_screen1, LV_OBJ_FLAG_HIDDEN);
-
-    menu_screen2 = lv_obj_create(parent);
-    lv_obj_set_size(menu_screen2, lv_pct(100), LV_VER_RES - status_bar_height);
-    lv_obj_set_style_bg_color(menu_screen2, DECKPRO_COLOR_BG, LV_PART_MAIN);
-    lv_obj_set_scrollbar_mode(menu_screen2, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_border_width(menu_screen2, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(menu_screen2, DECKPRO_COLOR_FG, LV_PART_MAIN);
-    lv_obj_set_style_border_side(menu_screen2, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(menu_screen2, 0, LV_PART_MAIN);
-    lv_obj_align(menu_screen2, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_add_flag(menu_screen2, LV_OBJ_FLAG_HIDDEN);
+    for(int p = 0; p < (int)MENU_PAGE_NUM; p++) {
+        menu_pages[p] = lv_obj_create(parent);
+        lv_obj_set_size(menu_pages[p], lv_pct(100), LV_VER_RES - status_bar_height);
+        lv_obj_set_style_bg_color(menu_pages[p], DECKPRO_COLOR_BG, LV_PART_MAIN);
+        lv_obj_set_scrollbar_mode(menu_pages[p], LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_style_border_width(menu_pages[p], 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(menu_pages[p], DECKPRO_COLOR_FG, LV_PART_MAIN);
+        lv_obj_set_style_border_side(menu_pages[p], LV_BORDER_SIDE_TOP, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(menu_pages[p], 0, LV_PART_MAIN);
+        lv_obj_align(menu_pages[p], LV_ALIGN_BOTTOM_MID, 0, 0);
+        if(p != 0) lv_obj_add_flag(menu_pages[p], LV_OBJ_FLAG_HIDDEN);
+    }
 
     if(ui_test_a7682e() == false)
     {
@@ -450,14 +443,10 @@ static void create0(lv_obj_t *parent)
     }
 
     for(int i = 0; i < MENU_BTN_NUM; i++) {
-        if(i < 9) {
-            menu_btn_create(menu_screen1, &menu_btn_list[i]);
-        } else {
-            menu_btn_create(menu_screen2, &menu_btn_list[i]);
-        }
+        menu_btn_create(menu_pages[i / MENU_PAGE_ITEMS], &menu_btn_list[i]);
     }
 
-    if(MENU_BTN_NUM > 9) {
+    if(MENU_PAGE_NUM > 1) {
         ui_Panel4 = lv_obj_create(parent);
         lv_obj_set_width(ui_Panel4, 240);
         lv_obj_set_height(ui_Panel4, 25);
@@ -475,23 +464,22 @@ static void create0(lv_obj_t *parent)
         lv_obj_set_style_shadow_width(ui_Panel4, 0, LV_PART_SCROLLBAR | LV_STATE_DEFAULT);
         lv_obj_set_style_shadow_spread(ui_Panel4, 0, LV_PART_SCROLLBAR | LV_STATE_DEFAULT);
 
-        lv_obj_t *ui_Button11 = lv_btn_create(ui_Panel4);
-        lv_obj_set_width(ui_Button11, 10);
-        lv_obj_set_height(ui_Button11, 10);
-        lv_obj_add_flag(ui_Button11, LV_OBJ_FLAG_SCROLL_ON_FOCUS);     /// Flags
-        lv_obj_clear_flag(ui_Button11, LV_OBJ_FLAG_CHECKABLE);      /// Flags
-        lv_obj_set_style_radius(ui_Button11, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(ui_Button11, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(ui_Button11, DECKPRO_COLOR_FG, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-        lv_obj_t *ui_Button12 = lv_btn_create(ui_Panel4);
-        lv_obj_set_width(ui_Button12, 10);
-        lv_obj_set_height(ui_Button12, 10);
-        lv_obj_add_flag(ui_Button12, LV_OBJ_FLAG_SCROLL_ON_FOCUS);     /// Flags
-        lv_obj_clear_flag(ui_Button12, LV_OBJ_FLAG_CHECKABLE);      /// Flags
-        lv_obj_set_style_radius(ui_Button12, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(ui_Button12, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+        /* One dot per page; the current one is filled (see menu_show_page). */
+        for(int p = 0; p < (int)MENU_PAGE_NUM; p++) {
+            lv_obj_t *dot = lv_btn_create(ui_Panel4);
+            lv_obj_set_width(dot, 10);
+            lv_obj_set_height(dot, 10);
+            lv_obj_add_flag(dot, LV_OBJ_FLAG_SCROLL_ON_FOCUS);     /// Flags
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_CHECKABLE);      /// Flags
+            lv_obj_set_style_radius(dot, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(dot, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(dot,
+                (p == 0) ? DECKPRO_COLOR_FG : lv_color_hex(0xFFFFFF),
+                LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
     }
+
+    page_curr = 0;
 }
 
 static void entry0(void) {
@@ -3172,6 +3160,9 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_fileserver;
     scr_mgr_register(SCREEN_FILESERVER_ID, &screen_fileserver);
+
+    extern scr_lifecycle_t screen_image;
+    scr_mgr_register(SCREEN_IMAGE_ID, &screen_image);
 
     scr_mgr_switch(SCREEN0_ID, false); // set root screen
     scr_mgr_set_anim(LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT);

@@ -718,6 +718,8 @@ void loop()
     voiceai_keyboard_poll();
     extern void recorder_keyboard_poll();
     recorder_keyboard_poll();
+    extern void image_keyboard_poll();
+    image_keyboard_poll();
     file_server_loop();
     bq25896_runtime_maintain();
 
