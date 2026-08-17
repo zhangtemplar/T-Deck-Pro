@@ -8,10 +8,19 @@
 #include "Arduino.h"
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
+#include "utilities.h"          /* BOARD_SD_CS */
+#include <SD.h>
 #include <vector>
 #include <math.h>
+#include <time.h>
 
-#define GPS_PAGE_COUNT 3
+extern void shared_spi_lock(void);
+extern void shared_spi_unlock(void);
+extern void shared_spi_prepare_device(int cs_pin);
+
+#define GPX_DIR "/gpx"
+#define GPX_MAX_FILES 64
+#define GPS_PAGE_COUNT 4
 #define MAP_X 5
 #define MAP_Y 4
 #define MAP_W 220
@@ -49,11 +58,24 @@ static bool tracking = false;
 static uint32_t track_start_ms = 0;
 static uint32_t track_last_pt_ms = 0;
 static float track_dist_m = 0;
+static time_t track_base_epoch = 0;   /* UTC epoch at track_start_ms (0 = unknown) */
+static bool track_saved = false;      /* GPX already written for the current track */
+static char last_gpx_path[64] = "";
 static lv_obj_t *lbl_track_info = NULL;
 static lv_obj_t *track_canvas = NULL;
 static lv_color_t *track_buf = NULL;
 
-static const char *page_titles[] = {"Overview", "Map", "Tracker"};
+/* Page 4: saved-track browser */
+static lv_obj_t *gpx_list = NULL;
+static lv_obj_t *gpx_info = NULL;
+static lv_obj_t *gpx_del_btn = NULL;
+static char gpx_files[GPX_MAX_FILES][40];
+static int gpx_count = 0;
+static int gpx_selected = -1;
+
+static const char *page_titles[] = {"Overview", "Map", "Tracker", "Tracks"};
+
+static void refresh_gpx_list();
 
 /* ---- Helpers ---- */
 
@@ -76,6 +98,8 @@ static void show_gps_page(int pg)
     }
     if (page_ind)
         lv_label_set_text_fmt(page_ind, "%s [%d/%d]", page_titles[pg], pg+1, GPS_PAGE_COUNT);
+
+    if (pg == 3) refresh_gpx_list();
 }
 
 /* ---- Page 1: Overview ---- */
@@ -285,22 +309,107 @@ static void update_track_info()
         elapsed = (track.back().ms - track.front().ms) / 1000;
     }
     int h = elapsed / 3600, m = (elapsed % 3600) / 60, s = elapsed % 60;
-    lv_label_set_text_fmt(lbl_track_info, "%s  Time: %02d:%02d:%02d  Dist: %.0fm  Pts: %d",
-        tracking ? "REC" : "STOP", h, m, s, track_dist_m, (int)track.size());
+    if (!tracking && last_gpx_path[0]) {
+        lv_label_set_text_fmt(lbl_track_info,
+            "STOP  Dist: %.0fm  Pts: %d\nSaved: %s",
+            track_dist_m, (int)track.size(), last_gpx_path);
+    } else {
+        lv_label_set_text_fmt(lbl_track_info, "%s  Time: %02d:%02d:%02d  Dist: %.0fm  Pts: %d",
+            tracking ? "REC" : "STOP", h, m, s, track_dist_m, (int)track.size());
+    }
+}
+
+/* Convert a UTC calendar date/time to a Unix epoch without relying on timegm()
+ * (days-from-civil, Howard Hinnant's algorithm). */
+static time_t utc_to_epoch(int y, int mo, int d, int h, int mi, int s)
+{
+    y -= (mo <= 2);
+    long era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = era * 146097L + (long)doe - 719468L;
+    return (time_t)days * 86400 + h * 3600 + mi * 60 + s;
+}
+
+/* Write the current track to /gpx/track_YYYYMMDD_HHMMSS.gpx on the SD card.
+ * Returns true on success; stores the path in last_gpx_path. */
+static bool save_gpx()
+{
+    if (track.empty()) return false;
+
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+
+    if (!SD.exists(GPX_DIR)) SD.mkdir(GPX_DIR);
+
+    /* Name the file from the start time when we have one, else a millis stamp. */
+    char path[64];
+    if (track_base_epoch != 0) {
+        struct tm tm;
+        gmtime_r(&track_base_epoch, &tm);
+        snprintf(path, sizeof(path), GPX_DIR "/track_%04d%02d%02d_%02d%02d%02d.gpx",
+                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec);
+    } else {
+        snprintf(path, sizeof(path), GPX_DIR "/track_%lu.gpx", (unsigned long)track_start_ms);
+    }
+
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) {
+        shared_spi_unlock();
+        Serial.printf("[GPS] GPX open failed: %s\n", path);
+        return false;
+    }
+
+    f.print("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<gpx version=\"1.1\" creator=\"T-Deck-Pro\" "
+            "xmlns=\"http://www.topografix.com/GPX/1/1\">\n"
+            "<trk><name>T-Deck-Pro Track</name><trkseg>\n");
+
+    for (auto &p : track) {
+        f.printf("<trkpt lat=\"%.6f\" lon=\"%.6f\">", p.lat, p.lng);
+        if (track_base_epoch != 0) {
+            time_t pt = track_base_epoch + (time_t)((p.ms - track_start_ms) / 1000);
+            struct tm tm;
+            gmtime_r(&pt, &tm);
+            char ts[32];
+            strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm);
+            f.printf("<time>%s</time>", ts);
+        }
+        f.print("</trkpt>\n");
+    }
+
+    f.print("</trkseg></trk></gpx>\n");
+    f.close();
+    shared_spi_unlock();
+
+    strncpy(last_gpx_path, path, sizeof(last_gpx_path) - 1);
+    last_gpx_path[sizeof(last_gpx_path) - 1] = '\0';
+    track_saved = true;
+    Serial.printf("[GPS] GPX saved to SD: %s (%d points, %.0fm)\n",
+                  path, (int)track.size(), track_dist_m);
+    return true;
 }
 
 static void track_toggle()
 {
     if (tracking) {
         tracking = false;
-        /* TODO: save GPX to SD when SD card is available */
         Serial.printf("[GPS] Track stopped: %d points, %.0fm\n", (int)track.size(), track_dist_m);
+        save_gpx();
     } else {
         if (!has_fix) return;
         track.clear();
         track_dist_m = 0;
         track_start_ms = millis();
         track_last_pt_ms = 0;
+        track_saved = false;
+        last_gpx_path[0] = '\0';
+        /* Anchor wall-clock time from the GPS UTC fix (used for GPX <time>). */
+        track_base_epoch = (cur_year >= 2000)
+            ? utc_to_epoch(cur_year, cur_month, cur_day, cur_hour, cur_min, cur_sec)
+            : 0;
         tracking = true;
         Serial.println("[GPS] Track started");
     }
@@ -319,6 +428,98 @@ static void track_record_point()
     if (track.size() < TRACK_MAX) {
         track.push_back({cur_lat, cur_lng, now});
     }
+}
+
+/* ---- Page 4: Tracks browser ---- */
+
+/* Count "<trkpt" occurrences in a GPX file (no repeated prefix, so a plain
+ * running match with reset-on-mismatch is exact). */
+static int count_trkpts(const char *path)
+{
+    static const char pat[] = "<trkpt";
+    const int pl = 6;
+    int n = 0, m = 0;
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    File f = SD.open(path, FILE_READ);
+    if (f) {
+        uint8_t buf[512];
+        while (f.available()) {
+            int r = f.read(buf, sizeof(buf));
+            for (int i = 0; i < r; i++) {
+                char c = (char)buf[i];
+                if (c == pat[m]) { if (++m == pl) { n++; m = 0; } }
+                else             { m = (c == pat[0]) ? 1 : 0; }
+            }
+        }
+        f.close();
+    }
+    shared_spi_unlock();
+    return n;
+}
+
+static void gpx_item_cb(lv_event_t *e)
+{
+    intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= gpx_count) return;
+    gpx_selected = (int)idx;
+    if (gpx_del_btn) lv_obj_clear_flag(gpx_del_btn, LV_OBJ_FLAG_HIDDEN);
+    const char *base = strrchr(gpx_files[idx], '/');
+    base = base ? base + 1 : gpx_files[idx];
+    int pts = count_trkpts(gpx_files[idx]);
+    if (gpx_info) lv_label_set_text_fmt(gpx_info, "%s\n%d points", base, pts);
+    ui_disp_full_refr();
+}
+
+static void refresh_gpx_list()
+{
+    if (!gpx_list) return;
+    lv_obj_clean(gpx_list);
+    gpx_count = 0;
+    gpx_selected = -1;
+    if (gpx_del_btn) lv_obj_add_flag(gpx_del_btn, LV_OBJ_FLAG_HIDDEN);
+
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    if (!SD.exists(GPX_DIR)) SD.mkdir(GPX_DIR);
+    File dir = SD.open(GPX_DIR);
+    if (dir && dir.isDirectory()) {
+        File e = dir.openNextFile();
+        while (e && gpx_count < GPX_MAX_FILES) {
+            if (!e.isDirectory()) {
+                const char *n = e.name();
+                const char *base = strrchr(n, '/');
+                base = base ? base + 1 : n;
+                uint32_t sz = e.size();
+                snprintf(gpx_files[gpx_count], sizeof(gpx_files[0]), GPX_DIR "/%s", base);
+                char label[64];
+                snprintf(label, sizeof(label), "%s (%uK)", base,
+                         (unsigned)((sz + 1023) / 1024));
+                lv_obj_t *btn = lv_list_add_btn(gpx_list, LV_SYMBOL_FILE, label);
+                lv_obj_add_event_cb(btn, gpx_item_cb, LV_EVENT_CLICKED,
+                                    (void *)(intptr_t)gpx_count);
+                gpx_count++;
+            }
+            e.close();
+            e = dir.openNextFile();
+        }
+        dir.close();
+    }
+    shared_spi_unlock();
+
+    if (gpx_info)
+        lv_label_set_text(gpx_info, gpx_count ? "Tap a track for details" : "No tracks yet");
+}
+
+static void gpx_delete_cb(lv_event_t *e)
+{
+    if (gpx_selected < 0 || gpx_selected >= gpx_count) return;
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    SD.remove(gpx_files[gpx_selected]);
+    shared_spi_unlock();
+    refresh_gpx_list();
+    ui_disp_full_refr();
 }
 
 /* ---- Timer ---- */
@@ -419,6 +620,34 @@ static void gps_create(lv_obj_t *parent)
         lv_canvas_set_buffer(track_canvas, track_buf, TRACK_VIEW_W, TRACK_VIEW_H, LV_IMG_CF_TRUE_COLOR);
     }
 
+    /* Page 3: Tracks browser (saved GPX files) */
+    pages[3] = make_page(parent);
+
+    gpx_list = lv_list_create(pages[3]);
+    lv_obj_set_size(gpx_list, 228, 198);
+    lv_obj_align(gpx_list, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_pad_all(gpx_list, 2, LV_PART_MAIN);
+
+    gpx_info = lv_label_create(pages[3]);
+    lv_obj_set_width(gpx_info, 150);
+    lv_label_set_long_mode(gpx_info, LV_LABEL_LONG_WRAP);
+    lv_obj_align(gpx_info, LV_ALIGN_BOTTOM_LEFT, 2, -4);
+    lv_obj_set_style_text_font(gpx_info, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_label_set_text(gpx_info, "No tracks yet");
+
+    gpx_del_btn = lv_btn_create(pages[3]);
+    lv_obj_set_size(gpx_del_btn, 72, 28);
+    lv_obj_align(gpx_del_btn, LV_ALIGN_BOTTOM_RIGHT, -2, -4);
+    lv_obj_set_style_radius(gpx_del_btn, 6, LV_PART_MAIN);
+    lv_obj_set_style_border_width(gpx_del_btn, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(gpx_del_btn, lv_color_white(), LV_PART_MAIN);
+    lv_obj_add_event_cb(gpx_del_btn, gpx_delete_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(gpx_del_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *dl = lv_label_create(gpx_del_btn);
+    lv_label_set_text(dl, LV_SYMBOL_TRASH " Del");
+    lv_obj_set_style_text_color(dl, lv_color_black(), LV_PART_MAIN);
+    lv_obj_center(dl);
+
     show_gps_page(0);
     ui_gps_task_resume();
     gps_timer = lv_timer_create(gps_update_cb, 3000, NULL);
@@ -434,10 +663,15 @@ static void gps_exit(void)
 }
 static void gps_destroy(void)
 {
+    /* Persist the track if the user left the screen without pressing stop. */
+    if (!track.empty() && !track_saved) save_gpx();
     gps_kbd_active = false;
     tracking = false;
     if (gps_timer) { lv_timer_del(gps_timer); gps_timer = NULL; }
     lbl_overview = lbl_track_info = map_canvas = track_canvas = page_ind = NULL;
+    gpx_list = gpx_info = gpx_del_btn = NULL;
+    gpx_count = 0;
+    gpx_selected = -1;
     for (int i = 0; i < GPS_PAGE_COUNT; i++) pages[i] = NULL;
     if (map_buf) { free(map_buf); map_buf = NULL; }
     if (track_buf) { free(track_buf); track_buf = NULL; }
