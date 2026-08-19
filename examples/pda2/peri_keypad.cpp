@@ -31,11 +31,31 @@ const char keymap_sym[KEYPAD_ROWS][KEYPAD_COLS] = {
     {  0,   0,   0,   0,   0,   0,   0, ' ',   0,   0},
 };
 
+// Shift + Sym: sparse overrides for punctuation the two base layers can't reach
+// (markdown needs ` > [ ] in particular). A 0 here means "no override", so the
+// plain sym character is used. Pairings follow the base key where there is an
+// obvious relative: ( ) -> [ ], , . -> < >, / -> backslash.
+const char keymap_sym_shift[KEYPAD_ROWS][KEYPAD_COLS] = {
+//    #    1    2    3    (    )    _    -    +    @
+    {  0,   0,   0,   0, '[', ']',   0, '~', '=', '&'},
+//    *    4    5    6    /    :    ;    '    "    BS
+    {  0,   0, '%',   0, '\\',  0, '|', '`',   0,   0},
+//   ALT   7    8    9    ?    !    ,    .    0    CR
+    {  0,   0,   0,   0, '{', '}', '<', '>',   0,   0},
+    {  0,   0,   0,   0,   0,   0,   0, ' ',   0,   0},
+};
+
 // Modifier positions
 #define KEY_ALT_ROW   2
 #define KEY_ALT_COL   0
 #define KEY_SYM_ROW   3
 #define KEY_SYM_COL   8
+// The two Ctrl keys were decoded but never mapped (see the row-3 note above),
+// so they become the shift pair: left = one-shot shift, right = caps lock.
+#define KEY_SHIFT_ROW 3
+#define KEY_SHIFT_COL 5
+#define KEY_CAPS_ROW  3
+#define KEY_CAPS_COL  9
 
 Adafruit_TCA8418 keypad;
 keypad_cb keypad_listener = NULL;
@@ -44,7 +64,9 @@ int keypad_state = KEYPAD_RELEASE;
 bool keypad_update = false;
 static bool sym_active = false;
 static bool sym_lock = false;
-static bool alt_held = false;   /* true only while the ALT key is physically down */
+static bool alt_held = false;     /* true only while the ALT key is physically down */
+static bool shift_active = false; /* one-shot: consumed by the next character    */
+static bool shift_lock = false;   /* caps lock                                    */
 
 bool keypad_init(int address)
 {
@@ -123,6 +145,23 @@ void keypad_loop(void)
         return;
     }
 
+    if (row == KEY_SHIFT_ROW && col == KEY_SHIFT_COL) {
+        if (state == KEYPAD_PRESS) {
+            shift_active = true;
+            Serial.println("[KBD] shift");
+        }
+        return;
+    }
+
+    if (row == KEY_CAPS_ROW && col == KEY_CAPS_COL) {
+        if (state == KEYPAD_PRESS) {
+            shift_lock = !shift_lock;
+            shift_active = shift_lock;
+            Serial.printf("[KBD] caps_lock=%d\n", shift_lock);
+        }
+        return;
+    }
+
     if (state == KEYPAD_PRESS) {
         /* Alt + P = screenshot (physical 'p' is row 0, col 9). Handled before
          * character mapping so it doesn't also emit the sym-layer character. */
@@ -132,8 +171,20 @@ void keypad_loop(void)
             return;
         }
 
-        c = (sym_active || sym_lock) ? keymap_sym[row][col] : keymap[row][col];
-        if (sym_active && !sym_lock) sym_active = false;
+        bool sym   = (sym_active || sym_lock);
+        bool shift = (shift_active || shift_lock);
+
+        if (sym) {
+            /* Shift only overrides where keymap_sym_shift has an entry. */
+            c = shift ? keymap_sym_shift[row][col] : 0;
+            if (c == 0) c = keymap_sym[row][col];
+        } else {
+            c = keymap[row][col];
+            if (shift && c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        }
+
+        if (sym_active && !sym_lock)     sym_active = false;
+        if (shift_active && !shift_lock) shift_active = false;
 
         if (c == 0) return;
 

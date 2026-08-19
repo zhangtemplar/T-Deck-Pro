@@ -722,6 +722,8 @@ void loop()
     image_keyboard_poll();
     extern void reader_keyboard_poll();
     reader_keyboard_poll();
+    extern void notes_keyboard_poll();
+    notes_keyboard_poll();
     file_server_loop();
     bq25896_runtime_maintain();
 

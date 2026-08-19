@@ -281,6 +281,7 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN_FILESERVER_ID,   &img_SD,         "Files"},
     {SCREEN_IMAGE_ID,        &img_image,      "Images"},
     {SCREEN_READER_ID,       &img_book,       "Reader"},
+    {SCREEN_NOTES_ID,        &img_notes,      "Notes"},
 
     /* Hardware / diagnostics */
     {SCREEN1_ID,             &img_lora,       "Lora"},
@@ -3207,6 +3208,9 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_reader;
     scr_mgr_register(SCREEN_READER_ID, &screen_reader);
+
+    extern scr_lifecycle_t screen_notes;
+    scr_mgr_register(SCREEN_NOTES_ID, &screen_notes);
 
     scr_mgr_switch(SCREEN0_ID, false); // set root screen
     scr_mgr_set_anim(LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT);

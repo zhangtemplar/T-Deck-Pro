@@ -80,6 +80,7 @@ enum {
     SCREEN_FILESERVER_ID,
     SCREEN_IMAGE_ID,
     SCREEN_READER_ID,
+    SCREEN_NOTES_ID,
 };
 
 typedef void (*ui_indev_read_cb)(int);
