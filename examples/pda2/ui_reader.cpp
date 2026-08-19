@@ -1,10 +1,18 @@
 /**
  * @file      ui_reader.cpp
- * @brief     Plain-text reader (.txt / .md / .log) with auto-resume.
+ * @brief     Reader for plain text, Markdown and EPUB, with auto-resume.
  *
- * Page 1: the text, wrapped and paginated by text_layout.c (LVGL's own breaker
- *         can't wrap Chinese, so we pre-wrap and hand the label finished lines).
+ * Page 1: the text. Plain files are wrapped and paginated by text_layout.c
+ *         (LVGL's own breaker can't wrap Chinese, so we pre-wrap and hand the
+ *         label finished lines); .md and EPUB chapters go through md_view for
+ *         styled headings, lists and quotes.
  * Page 2: a file browser for picking a book.
+ * Page 3: the chapter list, when an EPUB is open.
+ *
+ * An EPUB is held in PSRAM for the book's lifetime and one chapter at a time is
+ * flattened into the same block model Markdown uses, so pagination, CJK
+ * wrapping and styling are all shared. Paging past a chapter's end rolls into
+ * the next one, so the book reads continuously.
  *
  * Pagination is incremental rather than a full pre-scan: laying out a 1 MB book
  * up front would stall for seconds, so we lay out one page at a time and push
@@ -21,16 +29,19 @@
 #include "text_layout.h"
 #include "md_parse.h"
 #include "md_view.h"
+#include "epub.h"
+#include "xhtml_blocks.h"
 #include "cjk_font.h"
 #include "src/assets.h"
 #include "utilities.h"
 #include <SD.h>
+#include <esp_heap_caps.h>
 
 extern void shared_spi_lock(void);
 extern void shared_spi_unlock(void);
 extern void shared_spi_prepare_device(int cs_pin);
 
-#define RD_PAGE_COUNT    2
+#define RD_PAGE_COUNT    3
 #define RD_START_DIR     "/books"
 #define RD_POS_FILE      "/books/.reader"
 #define RD_MAX_ENTRIES   128
@@ -59,6 +70,9 @@ static lv_obj_t *status_label = NULL;
 static lv_obj_t *browser_list = NULL;
 static lv_obj_t *browser_path_lbl = NULL;
 
+/* Page 3 (EPUB chapter list) */
+static lv_obj_t *chapter_list = NULL;
+
 /* Book */
 static char  *g_text = NULL;         /* whole file in PSRAM, NUL-terminated */
 static size_t g_len = 0;
@@ -70,7 +84,10 @@ static bool   g_big_font = false;
  * (same styling the notes app uses) instead of the plain single-font path.
  * The saved reading position stays a byte offset either way, so resume works
  * the same for both — in markdown mode it is the current block's offset. */
-#define RD_MAX_BLOCKS  2048
+/* Block table sizing. Some EPUBs ship the whole book as one XHTML file, so the
+ * per-chapter budget has to be generous; at ~16 bytes each this is 128 KB of
+ * PSRAM. Hitting either cap is reported rather than silently truncating. */
+#define RD_MAX_BLOCKS  8192
 #define RD_MAX_ROWS    24
 static bool        g_is_md = false;
 static md_block_t *g_blocks = NULL;
@@ -80,6 +97,16 @@ static md_cursor_t g_md_back[128];
 static int         g_md_back_n = 0;
 static lv_obj_t   *md_rows[RD_MAX_ROWS] = {};
 static lv_obj_t   *md_cont = NULL;
+
+/* EPUB: the archive stays in PSRAM for the book's lifetime; one chapter at a
+ * time is flattened into g_text/g_blocks, which the markdown path then renders.
+ * Paging past the end of a chapter rolls into the next, so the book reads as
+ * one continuous flow. */
+#define RD_MAX_CHAP_TEXT (512 * 1024)
+static bool     g_is_epub = false;
+static epub_t   g_epub;
+static uint8_t *g_zipbuf = NULL;
+static int      g_chapter = 0;
 
 /* Visited page starts, for exact backward paging. */
 static size_t *g_stack = NULL;
@@ -93,6 +120,7 @@ static char cur_dir[RD_PATH_LEN] = RD_START_DIR;
 
 static void show_rd_page(int pg);
 static void refresh_browser(void);
+static void refresh_chapters(void);
 static void render_page(void);
 
 /* ---- helpers ---- */
@@ -109,7 +137,7 @@ static bool is_text_name(const char *n)
 {
     const char *e = ext_of(n);
     return ext_eq(e, "txt") || ext_eq(e, "md") || ext_eq(e, "log") ||
-           ext_eq(e, "csv") || ext_eq(e, "json");
+           ext_eq(e, "csv") || ext_eq(e, "json") || ext_eq(e, "epub");
 }
 
 static void path_join_into(char *dst, size_t cap, const char *dir, const char *leaf)
@@ -171,30 +199,40 @@ static void make_layout(txt_layout_t *lay)
 }
 
 /* ---- position persistence ----
- * One line per book in RD_POS_FILE: "<offset>\t<path>". Rewritten whole (the
- * file is a few KB at most), with the current book moved to the front so the
- * list self-trims to the most recently read. */
+ * One line per book in RD_POS_FILE: "<offset>\t<path>", with EPUBs adding a
+ * third field: "<offset>\t<path>\t<chapter>". Appending rather than reordering
+ * the fields keeps entries written by earlier versions readable. The file is
+ * rewritten whole (it is a few KB at most) with the current book moved to the
+ * front, so the list self-trims to the most recently read. */
 
-static size_t load_saved_pos(const char *path)
+static void load_saved_pos(const char *path, size_t *off, int *chapter)
 {
-    size_t found = 0;
+    *off = 0;
+    *chapter = 0;
+
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);
     File f = SD.open(RD_POS_FILE, FILE_READ);
     if (f) {
-        char line[160];
+        char line[200];
         while (f.available()) {
             size_t n = f.readBytesUntil('\n', line, sizeof(line) - 1);
             line[n] = '\0';
             char *tab = strchr(line, '\t');
             if (!tab) continue;
             *tab = '\0';
-            if (!strcmp(tab + 1, path)) { found = (size_t)strtoul(line, NULL, 10); break; }
+            char *rest = tab + 1;
+            char *tab2 = strchr(rest, '\t');          /* optional chapter field */
+            if (tab2) *tab2 = '\0';
+            if (!strcmp(rest, path)) {
+                *off = (size_t)strtoul(line, NULL, 10);
+                if (tab2) *chapter = (int)strtol(tab2 + 1, NULL, 10);
+                break;
+            }
         }
         f.close();
     }
     shared_spi_unlock();
-    return found;
 }
 
 static void save_pos(void)
@@ -231,7 +269,8 @@ static void save_pos(void)
 
     File o = SD.open(RD_POS_FILE, FILE_WRITE);
     if (o) {
-        o.printf("%lu\t%s\n", (unsigned long)g_pos, g_path);
+        if (g_is_epub) o.printf("%lu\t%s\t%d\n", (unsigned long)g_pos, g_path, g_chapter);
+        else           o.printf("%lu\t%s\n",     (unsigned long)g_pos, g_path);
         for (int i = 0; i < keep_n; i++) o.printf("%s\n", keep[i]);
         o.close();
     }
@@ -244,16 +283,143 @@ static void free_book(void)
 {
     if (g_text)   { free(g_text);   g_text = NULL; }
     if (g_blocks) { free(g_blocks); g_blocks = NULL; }
+    if (g_is_epub) epub_close(&g_epub);
+    if (g_zipbuf) { free(g_zipbuf); g_zipbuf = NULL; }
     g_len = 0;
     g_stack_n = 0;
     g_nblocks = 0;
     g_cur.blk = g_cur.line = 0;
     g_md_back_n = 0;
     g_is_md = false;
+    g_is_epub = false;
+    g_chapter = 0;
+}
+
+/* Flatten EPUB chapter `idx` into g_text/g_blocks and start at its top. */
+static bool load_chapter(int idx)
+{
+    if (!g_is_epub || idx < 0 || idx >= g_epub.nchap) return false;
+
+    uint8_t *xml = NULL;
+    size_t xlen = 0;
+    if (epub_chapter(&g_epub, idx, &xml, &xlen) != 0) {
+        if (status_label) lv_label_set_text(status_label, "Chapter unreadable");
+        return false;
+    }
+
+    g_nblocks = xhtml_to_blocks((const char *)xml, xlen,
+                                g_text, RD_MAX_CHAP_TEXT, &g_len,
+                                g_blocks, RD_MAX_BLOCKS);
+    free(xml);
+
+    g_chapter = idx;
+    g_cur.blk = g_cur.line = 0;
+    g_md_back_n = 0;
+
+    bool truncated = (g_nblocks >= RD_MAX_BLOCKS) || (g_len >= RD_MAX_CHAP_TEXT - 1);
+    Serial.printf("[READ] chapter %d/%d: %d blocks, %u bytes%s\n",
+                  idx + 1, g_epub.nchap, g_nblocks, (unsigned)g_len,
+                  truncated ? "  (TRUNCATED)" : "");
+    if (truncated && status_label)
+        lv_label_set_text(status_label, "Chapter too large - truncated");
+    return true;
+}
+
+/* Read a whole file from the card into PSRAM. Caller frees. */
+static uint8_t *slurp_file(const char *path, size_t *out_len)
+{
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory()) {
+        if (f) f.close();
+        shared_spi_unlock();
+        return NULL;
+    }
+    size_t len = f.size();
+    if (len == 0 || len > RD_MAX_FILE) { f.close(); shared_spi_unlock(); return NULL; }
+    uint8_t *buf = (uint8_t *)ps_malloc(len + 1);
+    if (!buf) { f.close(); shared_spi_unlock(); return NULL; }
+    size_t got = 0;
+    while (got < len) {
+        int n = f.read(buf + got, len - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    f.close();
+    shared_spi_unlock();
+    buf[got] = '\0';
+    *out_len = got;
+    return buf;
+}
+
+static bool load_epub(const char *path)
+{
+    size_t zlen = 0;
+    uint8_t *zbuf = slurp_file(path, &zlen);
+    if (!zbuf) {
+        if (status_label) lv_label_set_text(status_label, "Cannot read EPUB");
+        return false;
+    }
+
+    epub_t book;
+    int rc = epub_open(&book, zbuf, zlen);
+    if (rc != 0) {
+        free(zbuf);
+        Serial.printf("[READ] %s: %s\n", path, epub_err_text(rc));
+        if (status_label) lv_label_set_text_fmt(status_label, "%s", epub_err_text(rc));
+        return false;
+    }
+
+    /* Chapter text and block table are reused across chapters, so allocate the
+     * worst case once rather than per chapter. */
+    char *tbuf = (char *)ps_malloc(RD_MAX_CHAP_TEXT + 1);
+    md_block_t *bblk = (md_block_t *)ps_calloc(RD_MAX_BLOCKS, sizeof(md_block_t));
+    if (!tbuf || !bblk) {
+        free(tbuf); free(bblk);
+        epub_close(&book);
+        free(zbuf);
+        if (status_label) lv_label_set_text(status_label, "Out of memory");
+        return false;
+    }
+
+    free_book();
+    g_zipbuf  = zbuf;
+    g_epub    = book;
+    g_is_epub = true;
+    g_is_md   = true;              /* rendered through the same block path */
+    g_text    = tbuf;
+    g_blocks  = bblk;
+    strncpy(g_path, path, sizeof(g_path) - 1);
+    g_path[sizeof(g_path) - 1] = '\0';
+
+    size_t saved_off = 0;
+    int saved_chap = 0;
+    load_saved_pos(path, &saved_off, &saved_chap);
+    if (saved_chap < 0 || saved_chap >= g_epub.nchap) saved_chap = 0;
+
+    if (!load_chapter(saved_chap)) { free_book(); return false; }
+
+    /* Land on the block at or after the saved offset within that chapter. */
+    for (int i = 0; i < g_nblocks; i++) {
+        if (g_blocks[i].off >= saved_off) { g_cur.blk = i; break; }
+    }
+
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    Serial.printf("[READ] %s: EPUB '%s', %d chapters, resume ch%d "
+                  "(lvgl heap %u%% used, %u KB free, %u KB largest; psram %u KB)\n",
+                  path, g_epub.title, g_epub.nchap, saved_chap + 1,
+                  (unsigned)mon.used_pct, (unsigned)(mon.free_size / 1024),
+                  (unsigned)(mon.free_biggest_size / 1024),
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    return true;
 }
 
 static bool load_book(const char *path)
 {
+    if (ext_eq(ext_of(path), "epub")) return load_epub(path);
+
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);
     File f = SD.open(path, FILE_READ);
@@ -299,7 +465,9 @@ static bool load_book(const char *path)
     if (g_len >= 3 && (uint8_t)g_text[0] == 0xEF && (uint8_t)g_text[1] == 0xBB &&
         (uint8_t)g_text[2] == 0xBF) start = 3;
 
-    size_t saved = load_saved_pos(path);
+    size_t saved = 0;
+    int saved_chap_unused = 0;
+    load_saved_pos(path, &saved, &saved_chap_unused);
     g_pos = (saved > start && saved < g_len) ? txt_utf8_align(g_text, saved) : start;
     g_stack_n = 0;
 
@@ -351,7 +519,15 @@ static void next_page(void)
         md_view_t v;
         rd_view(&v);
         md_cursor_t nxt = md_view_measure(&v, g_text, g_blocks, g_nblocks, g_cur);
-        if (nxt.blk >= g_nblocks) return;                   /* already at the end */
+
+        if (nxt.blk >= g_nblocks) {
+            /* End of chapter: roll into the next one so the book reads as a
+             * single flow. The back-stack is per chapter, so it resets. */
+            if (g_is_epub && g_chapter + 1 < g_epub.nchap) {
+                if (load_chapter(g_chapter + 1)) render_page();
+            }
+            return;
+        }
         if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) return;
         if (g_md_back_n < (int)(sizeof(g_md_back) / sizeof(g_md_back[0])))
             g_md_back[g_md_back_n++] = g_cur;
@@ -377,9 +553,26 @@ static void prev_page(void)
     if (!g_text) return;
 
     if (g_is_md) {
-        if (g_md_back_n == 0) return;
-        g_cur = g_md_back[--g_md_back_n];
-        render_page();
+        if (g_md_back_n > 0) {
+            g_cur = g_md_back[--g_md_back_n];
+            render_page();
+            return;
+        }
+        /* At the top of a chapter: step back into the previous one and page
+         * forward to its last screen, so backwards reading is continuous too. */
+        if (g_is_epub && g_chapter > 0 && load_chapter(g_chapter - 1)) {
+            md_view_t v;
+            rd_view(&v);
+            for (int guard = 0; guard < 4096; guard++) {
+                md_cursor_t nxt = md_view_measure(&v, g_text, g_blocks, g_nblocks, g_cur);
+                if (nxt.blk >= g_nblocks) break;            /* g_cur is the last page */
+                if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) break;
+                if (g_md_back_n < (int)(sizeof(g_md_back) / sizeof(g_md_back[0])))
+                    g_md_back[g_md_back_n++] = g_cur;
+                g_cur = nxt;
+            }
+            render_page();
+        }
         return;
     }
 
@@ -439,13 +632,34 @@ static void render_page(void)
 
         md_view_t v;
         rd_view(&v);
+        uint32_t t0 = millis();
         md_view_render(&v, g_text, g_blocks, g_nblocks, g_cur);
+        uint32_t t_draw = millis() - t0;
+        /* Glyphs missing from the PSRAM raster fall through to the streaming
+         * TTF, which costs ~a second each; if a page ever gets slow this is
+         * what says so instead of the screen just appearing to freeze. */
+        if (t_draw > 200) {
+            lv_mem_monitor_t mon;
+            lv_mem_monitor(&mon);
+            Serial.printf("[READ] slow page: layout+draw %lu ms (ch%d blk%d, "
+                          "lvgl heap %u%% used, %u KB free)\n",
+                          (unsigned long)t_draw, g_chapter + 1, g_cur.blk,
+                          (unsigned)mon.used_pct, (unsigned)(mon.free_size / 1024));
+        }
 
         if (status_label) {
-            const char *base = strrchr(g_path, '/');
-            base = base ? base + 1 : g_path;
             int pct = g_nblocks ? (g_cur.blk * 100 / g_nblocks) : 0;
-            lv_label_set_text_fmt(status_label, "%s  %d%%", base, pct);
+            if (g_is_epub) {
+                /* Chapter position matters more than progress within it. */
+                const char *ct = g_epub.chap_title[g_chapter];
+                lv_label_set_text_fmt(status_label, "%d/%d %s  %d%%",
+                                      g_chapter + 1, g_epub.nchap,
+                                      ct[0] ? ct : "", pct);
+            } else {
+                const char *base = strrchr(g_path, '/');
+                base = base ? base + 1 : g_path;
+                lv_label_set_text_fmt(status_label, "%s  %d%%", base, pct);
+            }
         }
         ui_disp_full_refr();
         return;
@@ -566,12 +780,14 @@ static void refresh_browser(void)
     lv_obj_clean(browser_list);
     if (strcmp(cur_dir, "/") != 0) {
         lv_obj_t *b = lv_list_add_btn(browser_list, LV_SYMBOL_DIRECTORY, "..");
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
         lv_obj_add_event_cb(b, browser_item_cb, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
     }
     for (int i = 0; i < entry_count; i++) {
         lv_obj_t *b = lv_list_add_btn(browser_list,
                                       entries[i].is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE,
                                       entries[i].name);
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
         lv_obj_add_event_cb(b, browser_item_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
     if (browser_path_lbl) lv_label_set_text_fmt(browser_path_lbl, "%s", cur_dir);
@@ -579,7 +795,49 @@ static void refresh_browser(void)
 
 /* ---- pages ---- */
 
-static const char *page_titles[] = {"Read", "Books"};
+/* ---- chapter list (EPUB only) ---- */
+
+static void chapter_item_cb(lv_event_t *e)
+{
+    intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+    if (!g_is_epub || idx < 0 || idx >= g_epub.nchap) return;
+    if (load_chapter((int)idx)) {
+        show_rd_page(0);
+        render_page();
+    }
+}
+
+static void refresh_chapters(void)
+{
+    if (!chapter_list) return;
+    lv_obj_clean(chapter_list);
+
+    if (!g_is_epub) {
+        lv_obj_t *b = lv_list_add_btn(chapter_list, NULL, "Open an EPUB to see chapters");
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
+        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        return;
+    }
+
+    for (int i = 0; i < g_epub.nchap; i++) {
+        /* Fall back to the file name when the book has no usable TOC. */
+        const char *t = g_epub.chap_title[i];
+        char label[96];
+        if (t[0]) {
+            snprintf(label, sizeof(label), "%d. %s", i + 1, t);
+        } else {
+            const char *base = strrchr(g_epub.chap[i], '/');
+            base = base ? base + 1 : g_epub.chap[i];
+            snprintf(label, sizeof(label), "%d. %s", i + 1, base);
+        }
+        lv_obj_t *b = lv_list_add_btn(chapter_list,
+                                      i == g_chapter ? LV_SYMBOL_RIGHT : NULL, label);
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
+        lv_obj_add_event_cb(b, chapter_item_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
+static const char *page_titles[] = {"Read", "Books", "Chapters"};
 
 static void show_rd_page(int pg)
 {
@@ -592,6 +850,7 @@ static void show_rd_page(int pg)
     if (page_ind)
         lv_label_set_text_fmt(page_ind, "%s [%d/%d]", page_titles[pg], pg + 1, RD_PAGE_COUNT);
     if (pg == 1) refresh_browser();
+    if (pg == 2) refresh_chapters();
 }
 
 /* ---- keyboard ---- */
@@ -604,7 +863,7 @@ void reader_keyboard_poll(void)
     keypad_set_flag();
 
     if (c == '\b') {
-        if (rd_page == 1) { show_rd_page(0); ui_disp_full_refr(); }
+        if (rd_page != 0) { show_rd_page(0); ui_disp_full_refr(); }
         else { save_pos(); rd_kbd_active = false; scr_mgr_pop(false); }
         return;
     }
@@ -694,7 +953,7 @@ static void rd_create(lv_obj_t *parent)
     lv_obj_set_width(status_label, 160);
     lv_label_set_long_mode(status_label, LV_LABEL_LONG_DOT);
     lv_obj_align(status_label, LV_ALIGN_BOTTOM_LEFT, 4, 0);
-    lv_obj_set_style_text_font(status_label, &Font_Mono_Bold_14, LV_PART_MAIN);
+    lv_obj_set_style_text_font(status_label, &g_font_cn, LV_PART_MAIN);
     lv_label_set_text(status_label, "space/m next  n prev  i/o size");
 
     /* Page 1: browser */
@@ -704,13 +963,22 @@ static void rd_create(lv_obj_t *parent)
     lv_obj_set_width(browser_path_lbl, 232);
     lv_label_set_long_mode(browser_path_lbl, LV_LABEL_LONG_DOT);
     lv_obj_align(browser_path_lbl, LV_ALIGN_TOP_LEFT, 4, 0);
-    lv_obj_set_style_text_font(browser_path_lbl, &Font_Mono_Bold_14, LV_PART_MAIN);
+    lv_obj_set_style_text_font(browser_path_lbl, &g_font_cn, LV_PART_MAIN);
     lv_label_set_text(browser_path_lbl, cur_dir);
 
     browser_list = lv_list_create(pages[1]);
+    lv_obj_set_style_text_font(browser_list, &g_font_cn, LV_PART_MAIN);
     lv_obj_set_size(browser_list, 236, 250);
     lv_obj_align(browser_list, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_set_style_pad_all(browser_list, 2, LV_PART_MAIN);
+
+    /* Page 2: chapter list, populated only when an EPUB is open. */
+    pages[2] = make_page(parent);
+    chapter_list = lv_list_create(pages[2]);
+    lv_obj_set_style_text_font(chapter_list, &g_font_cn, LV_PART_MAIN);
+    lv_obj_set_size(chapter_list, 236, 270);
+    lv_obj_align(chapter_list, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_pad_all(chapter_list, 2, LV_PART_MAIN);
 
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);
@@ -747,6 +1015,7 @@ static void rd_destroy(void)
     for (int i = 0; i < RD_MAX_ROWS; i++) md_rows[i] = NULL;
     md_cont = NULL;
     text_label = status_label = browser_list = browser_path_lbl = page_ind = NULL;
+    chapter_list = NULL;
     for (int i = 0; i < RD_PAGE_COUNT; i++) pages[i] = NULL;
     entry_count = 0;
     g_path[0] = '\0';

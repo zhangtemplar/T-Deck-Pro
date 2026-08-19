@@ -52,7 +52,7 @@
      *Enlarged and PSRAM-backed (below): TinyTTF/stb_truetype rasterizes CJK
      *glyphs through lv_mem_alloc(); the old 48 kB internal pool overflowed on
      *the first Chinese glyph and LV_ASSERT_MALLOC halted the device.*/
-    #define LV_MEM_SIZE (512U * 1024U)          /*[bytes]*/
+    #define LV_MEM_SIZE (1024U * 1024U)         /*[bytes]*/
 
     /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
     #define LV_MEM_ADR 0     /*0: unused*/
@@ -267,8 +267,12 @@
 #define LV_USE_ASSERT_OBJ           0   /*Check the object's type and existence (e.g. not deleted). (Slow)*/
 
 /*Add a custom handler when assert happens e.g. to restart the MCU*/
-#define LV_ASSERT_HANDLER_INCLUDE <stdint.h>
-#define LV_ASSERT_HANDLER while(1);   /*Halt by default*/
+#define LV_ASSERT_HANDLER_INCLUDE <stdlib.h>
+/* Do NOT halt silently. With LV_USE_LOG disabled, `while(1);` turns an LVGL
+ * assertion (a failed allocation, a NULL font, ...) into a dead device with no
+ * output whatsoever — no panic, no reboot, no clue. abort() goes through the
+ * ESP panic handler instead, which prints a backtrace the monitor decodes. */
+#define LV_ASSERT_HANDLER abort();
 
 /*-------------
  * Others

@@ -15,15 +15,38 @@
  * is emitting, and rendering never runs re-entrantly. */
 static char s_scratch[MD_VIEW_SCRATCH];
 
+/* Heading and code faces composed with the CJK fallback chain.
+ *
+ * Montserrat and the mono faces contain no CJK, and their `fallback` is NULL,
+ * so a Chinese heading would render as one empty placeholder box per character
+ * — each of which also costs a draw_rect. The built-in fonts are const, so
+ * copy them once and borrow the chain g_font_cn already points at. */
+static lv_font_t s_h1, s_h3, s_code, s_code_big;
+static bool s_fonts_ready = false;
+
+static void ensure_fonts(void)
+{
+    if (s_fonts_ready) return;
+    /* g_font_cn.fallback is the head of the CJK chain (raster 14 -> 16 -> TTF),
+     * or NULL when no CJK font was found, which is still a valid chain end. */
+    const lv_font_t *cjk = g_font_cn.fallback;
+
+    s_h1       = lv_font_montserrat_26; s_h1.fallback       = cjk;
+    s_h3       = Font_Mono_Bold_16;     s_h3.fallback       = cjk;
+    s_code     = Font_Mono_Bold_14;     s_code.fallback     = cjk;
+    s_code_big = Font_Mono_Bold_16;     s_code_big.fallback = cjk;
+    s_fonts_ready = true;
+}
+
 /* Fonts per block kind. `big` shifts the body text up for comfortable reading;
  * headings are already large so H1 stays put. */
 static const lv_font_t *block_font(md_kind_t k, bool big)
 {
     switch (k) {
-    case MD_H1:   return &lv_font_montserrat_26;
-    case MD_H2:   return big ? &lv_font_montserrat_26 : &g_font_cn_large;
-    case MD_H3:   return big ? &g_font_cn_large : &Font_Mono_Bold_16;
-    case MD_CODE: return big ? &Font_Mono_Bold_16 : &Font_Mono_Bold_14;
+    case MD_H1:   return &s_h1;
+    case MD_H2:   return big ? &s_h1 : &g_font_cn_large;
+    case MD_H3:   return big ? &g_font_cn_large : &s_h3;
+    case MD_CODE: return big ? &s_code_big : &s_code;
     default:      return big ? &g_font_cn_large : &g_font_cn;
     }
 }
@@ -145,6 +168,7 @@ void md_view_clear(const md_view_t *v)
 md_cursor_t md_view_render(const md_view_t *v, const char *text,
                            const md_block_t *blocks, int nblocks, md_cursor_t cur)
 {
+    ensure_fonts();
     md_view_clear(v);
     bool big = v->big;
     md_layout_env_t env;
@@ -156,6 +180,7 @@ md_cursor_t md_view_render(const md_view_t *v, const char *text,
 md_cursor_t md_view_measure(const md_view_t *v, const char *text,
                             const md_block_t *blocks, int nblocks, md_cursor_t cur)
 {
+    ensure_fonts();
     bool big = v->big;
     md_layout_env_t env;
     build_env(v, &env, &big);

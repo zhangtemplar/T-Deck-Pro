@@ -37,12 +37,30 @@
 
 #include <stdlib.h>
 #include "img_codec.h"
+#include "inflate_util.h"
 
 /* The allocators lodepng.c declared but, per LODEPNG_NO_COMPILE_ALLOCATORS,
  * left for us to define. */
 void *lodepng_malloc(size_t size)             { return malloc(size); }
 void *lodepng_realloc(void *ptr, size_t size) { return realloc(ptr, size); }
 void  lodepng_free(void *ptr)                 { free(ptr); }
+
+/* Raw DEFLATE, exposed for the EPUB reader (see inflate_util.h). This lives
+ * here because this file is the only place lodepng is compiled. */
+int inflate_raw(const uint8_t *in, size_t in_len, uint8_t **out, size_t *out_len)
+{
+    unsigned char *buf = NULL;
+    size_t n = 0;
+    unsigned err = lodepng_inflate(&buf, &n, in, in_len,
+                                   &lodepng_default_decompress_settings);
+    if (err) {
+        free(buf);
+        return -1;
+    }
+    *out = buf;
+    *out_len = n;
+    return 0;
+}
 
 int img_png_decode_gray(const uint8_t *data, size_t len,
                         uint32_t max_pixels,

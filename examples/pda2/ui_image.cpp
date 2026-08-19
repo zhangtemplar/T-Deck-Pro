@@ -19,6 +19,7 @@
 #include "factory.h"
 #include "img_codec.h"
 #include "img_render.h"
+#include "cjk_font.h"
 #include "src/assets.h"
 #include "utilities.h"
 #include <SD.h>
@@ -382,12 +383,14 @@ static void refresh_browser(void)
 
     if (strcmp(cur_dir, "/") != 0) {
         lv_obj_t *b = lv_list_add_btn(browser_list, LV_SYMBOL_DIRECTORY, "..");
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
         lv_obj_add_event_cb(b, browser_item_cb, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
     }
     for (int i = 0; i < entry_count; i++) {
         lv_obj_t *b = lv_list_add_btn(browser_list,
                                       entries[i].is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_IMAGE,
                                       entries[i].name);
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
         lv_obj_add_event_cb(b, browser_item_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
 
@@ -485,7 +488,7 @@ static void img_create(lv_obj_t *parent)
     lv_obj_set_width(view_status, 170);
     lv_label_set_long_mode(view_status, LV_LABEL_LONG_DOT);
     lv_obj_align(view_status, LV_ALIGN_BOTTOM_LEFT, 2, 0);
-    lv_obj_set_style_text_font(view_status, &Font_Mono_Bold_14, LV_PART_MAIN);
+    lv_obj_set_style_text_font(view_status, &g_font_cn, LV_PART_MAIN);
     lv_label_set_text(view_status, "wasd pan  i/o zoom  n/m prev/next");
 
     /* Page 1: browser */
@@ -495,10 +498,11 @@ static void img_create(lv_obj_t *parent)
     lv_obj_set_width(browser_path_lbl, 232);
     lv_label_set_long_mode(browser_path_lbl, LV_LABEL_LONG_DOT);
     lv_obj_align(browser_path_lbl, LV_ALIGN_TOP_LEFT, 4, 0);
-    lv_obj_set_style_text_font(browser_path_lbl, &Font_Mono_Bold_14, LV_PART_MAIN);
+    lv_obj_set_style_text_font(browser_path_lbl, &g_font_cn, LV_PART_MAIN);
     lv_label_set_text(browser_path_lbl, cur_dir);
 
     browser_list = lv_list_create(pages[1]);
+    lv_obj_set_style_text_font(browser_list, &g_font_cn, LV_PART_MAIN);
     lv_obj_set_size(browser_list, 236, 250);
     lv_obj_align(browser_list, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_set_style_pad_all(browser_list, 2, LV_PART_MAIN);

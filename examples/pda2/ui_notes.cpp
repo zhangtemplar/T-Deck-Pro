@@ -350,10 +350,12 @@ static void refresh_list(void)
     lv_obj_clean(note_list);
 
     lv_obj_t *nb = lv_list_add_btn(note_list, LV_SYMBOL_PLUS, "New note");
+        lv_obj_set_style_text_font(nb, &g_font_cn, LV_PART_MAIN);
     lv_obj_add_event_cb(nb, new_cb, LV_EVENT_CLICKED, NULL);
 
     for (int i = 0; i < note_count; i++) {
         lv_obj_t *b = lv_list_add_btn(note_list, LV_SYMBOL_FILE, note_names[i]);
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
         lv_obj_add_event_cb(b, open_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_add_event_cb(b, delete_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
     }
@@ -462,12 +464,13 @@ static void nt_create(lv_obj_t *parent)
     lv_obj_set_width(view_status, 165);
     lv_label_set_long_mode(view_status, LV_LABEL_LONG_DOT);
     lv_obj_align(view_status, LV_ALIGN_BOTTOM_LEFT, 4, 0);
-    lv_obj_set_style_text_font(view_status, &Font_Mono_Bold_14, LV_PART_MAIN);
+    lv_obj_set_style_text_font(view_status, &g_font_cn, LV_PART_MAIN);
     lv_label_set_text(view_status, "No note open");
 
     /* Page 1: note list */
     pages[NT_PAGE_LIST] = make_page(parent);
     note_list = lv_list_create(pages[NT_PAGE_LIST]);
+    lv_obj_set_style_text_font(note_list, &g_font_cn, LV_PART_MAIN);
     lv_obj_set_size(note_list, 236, 270);
     lv_obj_align(note_list, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_pad_all(note_list, 2, LV_PART_MAIN);
