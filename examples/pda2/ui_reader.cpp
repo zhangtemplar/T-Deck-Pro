@@ -19,6 +19,8 @@
 #include "ui_deckpro_port.h"
 #include "factory.h"
 #include "text_layout.h"
+#include "md_parse.h"
+#include "md_view.h"
 #include "cjk_font.h"
 #include "src/assets.h"
 #include "utilities.h"
@@ -63,6 +65,21 @@ static size_t g_len = 0;
 static char   g_path[RD_PATH_LEN] = "";
 static size_t g_pos = 0;             /* byte offset of the current page start */
 static bool   g_big_font = false;
+
+/* Markdown mode: .md files are parsed into blocks and rendered with md_view
+ * (same styling the notes app uses) instead of the plain single-font path.
+ * The saved reading position stays a byte offset either way, so resume works
+ * the same for both — in markdown mode it is the current block's offset. */
+#define RD_MAX_BLOCKS  2048
+#define RD_MAX_ROWS    24
+static bool        g_is_md = false;
+static md_block_t *g_blocks = NULL;
+static int         g_nblocks = 0;
+static md_cursor_t g_cur = {0, 0};
+static md_cursor_t g_md_back[128];
+static int         g_md_back_n = 0;
+static lv_obj_t   *md_rows[RD_MAX_ROWS] = {};
+static lv_obj_t   *md_cont = NULL;
 
 /* Visited page starts, for exact backward paging. */
 static size_t *g_stack = NULL;
@@ -116,6 +133,23 @@ static const lv_font_t *cur_font(void)
     return g_big_font ? &g_font_cn_large : &g_font_cn;
 }
 
+static bool is_md_name(const char *n)
+{
+    const char *e = ext_of(n);
+    return ext_eq(e, "md") || ext_eq(e, "markdown");
+}
+
+static void rd_view(md_view_t *v)
+{
+    v->parent   = md_cont;
+    v->rows     = md_rows;
+    v->max_rows = RD_MAX_ROWS;
+    v->view_w   = RD_TEXT_W;
+    v->view_h   = RD_TEXT_H;
+    v->origin_x = 0;                 /* md_cont is already inset by RD_TEXT_X */
+    v->big      = g_big_font;
+}
+
 /* ---- layout glue ---- */
 
 static int reader_advance(uint32_t cp, void *ctx)
@@ -167,6 +201,11 @@ static void save_pos(void)
 {
     if (!g_path[0]) return;
 
+    /* Both modes persist a byte offset; in markdown mode it is the offset of
+     * the block currently at the top of the page. */
+    if (g_is_md && g_blocks && g_cur.blk < g_nblocks)
+        g_pos = g_blocks[g_cur.blk].off;
+
     /* Read the existing entries (minus this book) so we can rewrite the file. */
     static char keep[24][160];
     int keep_n = 0;
@@ -203,9 +242,14 @@ static void save_pos(void)
 
 static void free_book(void)
 {
-    if (g_text) { free(g_text); g_text = NULL; }
+    if (g_text)   { free(g_text);   g_text = NULL; }
+    if (g_blocks) { free(g_blocks); g_blocks = NULL; }
     g_len = 0;
     g_stack_n = 0;
+    g_nblocks = 0;
+    g_cur.blk = g_cur.line = 0;
+    g_md_back_n = 0;
+    g_is_md = false;
 }
 
 static bool load_book(const char *path)
@@ -259,8 +303,28 @@ static bool load_book(const char *path)
     g_pos = (saved > start && saved < g_len) ? txt_utf8_align(g_text, saved) : start;
     g_stack_n = 0;
 
-    Serial.printf("[READ] %s: %u bytes, resume at %u\n", path,
-                  (unsigned)g_len, (unsigned)g_pos);
+    /* .md gets the styled preview; everything else stays plain text. */
+    g_is_md = is_md_name(path);
+    if (g_is_md) {
+        g_blocks = (md_block_t *)ps_calloc(RD_MAX_BLOCKS, sizeof(md_block_t));
+        if (!g_blocks) {
+            g_is_md = false;                 /* fall back to plain rendering */
+        } else {
+            g_nblocks = md_parse(g_text, g_len, g_blocks, RD_MAX_BLOCKS);
+            /* Resume at the first block at or after the saved byte offset. If
+             * the offset is past every block (the book was read to the end),
+             * land on the last one rather than silently restarting. */
+            g_cur.blk = (g_nblocks > 0) ? g_nblocks - 1 : 0;
+            g_cur.line = 0;
+            for (int i = 0; i < g_nblocks; i++) {
+                if (g_blocks[i].off >= g_pos) { g_cur.blk = i; break; }
+            }
+            g_md_back_n = 0;
+        }
+    }
+
+    Serial.printf("[READ] %s: %u bytes, %s, resume at %u\n", path, (unsigned)g_len,
+                  g_is_md ? "markdown" : "plain", (unsigned)g_pos);
     return true;
 }
 
@@ -281,7 +345,22 @@ static void push_page(size_t off)
 
 static void next_page(void)
 {
-    if (!g_text || g_pos >= g_len) return;
+    if (!g_text) return;
+
+    if (g_is_md) {
+        md_view_t v;
+        rd_view(&v);
+        md_cursor_t nxt = md_view_measure(&v, g_text, g_blocks, g_nblocks, g_cur);
+        if (nxt.blk >= g_nblocks) return;                   /* already at the end */
+        if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) return;
+        if (g_md_back_n < (int)(sizeof(g_md_back) / sizeof(g_md_back[0])))
+            g_md_back[g_md_back_n++] = g_cur;
+        g_cur = nxt;
+        render_page();
+        return;
+    }
+
+    if (g_pos >= g_len) return;
     txt_layout_t lay;
     make_layout(&lay);
     txt_line_t lines[RD_MAX_LINES];
@@ -295,7 +374,16 @@ static void next_page(void)
 
 static void prev_page(void)
 {
-    if (!g_text || g_pos == 0) return;
+    if (!g_text) return;
+
+    if (g_is_md) {
+        if (g_md_back_n == 0) return;
+        g_cur = g_md_back[--g_md_back_n];
+        render_page();
+        return;
+    }
+
+    if (g_pos == 0) return;
 
     /* Exact when we've been here before this session. */
     if (g_stack_n > 0) {
@@ -342,6 +430,34 @@ static void render_page(void)
         if (status_label) lv_label_set_text(status_label, "No book open");
         return;
     }
+
+    if (g_is_md) {
+        /* Styled path: hide the plain label and draw blocks into md_cont. */
+        lv_label_set_text(text_label, "");
+        lv_obj_add_flag(text_label, LV_OBJ_FLAG_HIDDEN);
+        if (md_cont) lv_obj_clear_flag(md_cont, LV_OBJ_FLAG_HIDDEN);
+
+        md_view_t v;
+        rd_view(&v);
+        md_view_render(&v, g_text, g_blocks, g_nblocks, g_cur);
+
+        if (status_label) {
+            const char *base = strrchr(g_path, '/');
+            base = base ? base + 1 : g_path;
+            int pct = g_nblocks ? (g_cur.blk * 100 / g_nblocks) : 0;
+            lv_label_set_text_fmt(status_label, "%s  %d%%", base, pct);
+        }
+        ui_disp_full_refr();
+        return;
+    }
+
+    if (md_cont) {
+        md_view_t v;
+        rd_view(&v);
+        md_view_clear(&v);
+        lv_obj_add_flag(md_cont, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_clear_flag(text_label, LV_OBJ_FLAG_HIDDEN);
 
     txt_layout_t lay;
     make_layout(&lay);
@@ -505,11 +621,13 @@ void reader_keyboard_poll(void)
     case 's': next_page(); break;
     case 'n':
     case 'w': prev_page(); break;
+    /* Changing size re-flows everything, so the page-start history no longer
+     * describes real page boundaries — drop it and keep the current position. */
     case 'i':                                   /* bigger text */
-        if (!g_big_font) { g_big_font = true;  g_stack_n = 0; render_page(); }
+        if (!g_big_font) { g_big_font = true;  g_stack_n = 0; g_md_back_n = 0; render_page(); }
         break;
     case 'o':                                   /* smaller text */
-        if (g_big_font)  { g_big_font = false; g_stack_n = 0; render_page(); }
+        if (g_big_font)  { g_big_font = false; g_stack_n = 0; g_md_back_n = 0; render_page(); }
         break;
     default: break;
     }
@@ -559,6 +677,18 @@ static void rd_create(lv_obj_t *parent)
     lv_obj_set_style_text_line_space(text_label, 2, LV_PART_MAIN);
     lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, RD_TEXT_X, RD_TEXT_Y - 28);
     lv_label_set_text(text_label, "");
+
+    /* Markdown rows are positioned absolutely inside their own container, which
+     * sits exactly where the plain label does; only one is visible at a time. */
+    md_cont = lv_obj_create(pages[0]);
+    lv_obj_set_size(md_cont, RD_TEXT_W + 8, RD_TEXT_H);
+    lv_obj_set_pos(md_cont, RD_TEXT_X, RD_TEXT_Y - 28);
+    lv_obj_set_style_border_width(md_cont, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(md_cont, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(md_cont, 0, LV_PART_MAIN);
+    lv_obj_set_scrollbar_mode(md_cont, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(md_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(md_cont, LV_OBJ_FLAG_HIDDEN);
 
     status_label = lv_label_create(pages[0]);
     lv_obj_set_width(status_label, 160);
@@ -612,6 +742,10 @@ static void rd_destroy(void)
     free_book();
     if (g_stack) { free(g_stack); g_stack = NULL; }
     g_stack_n = 0;
+    /* The rows are children of md_cont and go with the screen; just drop our
+     * dangling pointers so a later render doesn't touch freed objects. */
+    for (int i = 0; i < RD_MAX_ROWS; i++) md_rows[i] = NULL;
+    md_cont = NULL;
     text_label = status_label = browser_list = browser_path_lbl = page_ind = NULL;
     for (int i = 0; i < RD_PAGE_COUNT; i++) pages[i] = NULL;
     entry_count = 0;

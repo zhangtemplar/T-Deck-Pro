@@ -20,6 +20,7 @@
 #include "text_layout.h"
 #include "md_parse.h"
 #include "md_layout.h"
+#include "md_view.h"
 #include "cjk_font.h"
 #include "src/assets.h"
 #include "utilities.h"
@@ -79,7 +80,6 @@ static int g_nblocks = 0;
 static md_cursor_t g_cur = {0, 0};
 static md_cursor_t g_back[128];
 static int g_back_n = 0;
-static char g_scratch[2048];
 
 static char note_names[NT_MAX_NOTES][NT_NAME_LEN];
 static int note_count = 0;
@@ -88,51 +88,17 @@ static void show_nt_page(int pg);
 static void refresh_list(void);
 static void render_preview(void);
 
-/* ---- block styling ---- */
+/* ---- preview rendering (styling lives in md_view.cpp) ---- */
 
-/* Font, left indent and bullet prefix for each block kind. */
-static const lv_font_t *block_font(md_kind_t k)
+static void nt_view(md_view_t *v)
 {
-    switch (k) {
-    case MD_H1:    return &lv_font_montserrat_26;
-    case MD_H2:    return &g_font_cn_large;          /* montserrat 18 + CJK 16 */
-    case MD_H3:    return &Font_Mono_Bold_16;
-    case MD_CODE:  return &Font_Mono_Bold_14;
-    default:       return &g_font_cn;                /* montserrat 14 + CJK 14 */
-    }
-}
-
-static int block_indent(const md_block_t *b)
-{
-    switch (b->kind) {
-    case MD_BULLET:
-    case MD_NUMBER: return 10 + 12 * b->indent;
-    case MD_QUOTE:  return 12;
-    case MD_CODE:   return 8;
-    default:        return 0;
-    }
-}
-
-/* ---- md_layout environment (bridges the layout engine to LVGL fonts) ---- */
-
-static int   nt_advance(uint32_t cp, void *f) { return lv_font_get_glyph_width((const lv_font_t *)f, cp, 0); }
-static void *nt_font_for(md_kind_t k, void *ctx) { (void)ctx; return (void *)block_font(k); }
-static int   nt_line_height(void *f) { return lv_font_get_line_height((const lv_font_t *)f); }
-static int   nt_indent_for(const md_block_t *b, void *ctx) { (void)ctx; return block_indent(b); }
-
-static void nt_env(md_layout_env_t *env)
-{
-    env->advance     = nt_advance;
-    env->font_for    = nt_font_for;
-    env->line_height = nt_line_height;
-    env->indent_for  = nt_indent_for;
-    env->ctx         = NULL;
-    env->view_w      = NT_VIEW_W;
-    env->view_h      = NT_VIEW_H;
-    env->line_gap    = NT_LINE_GAP;
-    env->max_rows    = NT_MAX_ROWS;
-    env->scratch     = g_scratch;
-    env->scratch_sz  = sizeof(g_scratch);
+    v->parent   = view_cont;
+    v->rows     = rows;
+    v->max_rows = NT_MAX_ROWS;
+    v->view_w   = NT_VIEW_W;
+    v->view_h   = NT_VIEW_H;
+    v->origin_x = NT_VIEW_X;
+    v->big      = false;
 }
 
 /* ---- note file handling ---- */
@@ -233,68 +199,13 @@ static bool new_note(void)
     return true;
 }
 
-/* ---- preview rendering ---- */
-
-static void clear_rows(void)
-{
-    for (int i = 0; i < NT_MAX_ROWS; i++) {
-        if (rows[i]) { lv_obj_del(rows[i]); rows[i] = NULL; }
-    }
-}
-
-/* Emit callback: turn one laid-out row into an LVGL object. */
-static void nt_emit(void *user, const md_block_t *b, int line_idx,
-                    const char *text, size_t len, int x, int y, void *font)
-{
-    int *rowp = (int *)user;
-    if (*rowp >= NT_MAX_ROWS) return;
-
-    if (b->kind == MD_RULE) {
-        lv_obj_t *hr = lv_obj_create(view_cont);
-        lv_obj_set_size(hr, NT_VIEW_W - 20, 2);
-        lv_obj_set_pos(hr, NT_VIEW_X + 10, y + 3);
-        lv_obj_set_style_bg_color(hr, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_border_width(hr, 0, LV_PART_MAIN);
-        lv_obj_set_style_radius(hr, 0, LV_PART_MAIN);
-        rows[(*rowp)++] = hr;
-        return;
-    }
-
-    lv_obj_t *lb = lv_label_create(view_cont);
-    lv_obj_set_style_text_font(lb, (const lv_font_t *)font, LV_PART_MAIN);
-    lv_label_set_long_mode(lb, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(lb, NT_VIEW_W - x + 4);
-
-    /* The list marker / quote bar goes on the block's first row only. */
-    char buf[320];
-    char numbuf[12];
-    const char *prefix = "";
-    if (line_idx == 0 && b->kind == MD_BULLET) prefix = "\xE2\x80\xA2 ";        /* • */
-    else if (line_idx == 0 && b->kind == MD_NUMBER) {
-        snprintf(numbuf, sizeof(numbuf), "%u. ", (unsigned)b->ord);
-        prefix = numbuf;
-    } else if (b->kind == MD_QUOTE) prefix = "\xE2\x94\x82 ";                   /* │ */
-
-    int pl = snprintf(buf, sizeof(buf), "%s", prefix);
-    int cp = (int)len;
-    if (pl + cp > (int)sizeof(buf) - 1) cp = (int)sizeof(buf) - 1 - pl;
-    if (cp > 0) memcpy(buf + pl, text, cp);
-    buf[pl + (cp > 0 ? cp : 0)] = '\0';
-    lv_label_set_text(lb, buf);
-
-    /* Hang the marker into the indent so wrapped rows line up under the text. */
-    int px = NT_VIEW_X + x;
-    if (line_idx == 0 && (b->kind == MD_BULLET || b->kind == MD_NUMBER)) px -= 10;
-    else if (b->kind == MD_QUOTE) px -= 12;
-    lv_obj_set_pos(lb, px, y);
-
-    rows[(*rowp)++] = lb;
-}
-
 static void render_preview(void)
 {
     if (!view_cont) return;
-    clear_rows();
+
+    md_view_t v;
+    nt_view(&v);
+    md_view_clear(&v);
 
     if (!g_text || g_nblocks == 0) {
         if (view_status)
@@ -303,10 +214,7 @@ static void render_preview(void)
         return;
     }
 
-    md_layout_env_t env;
-    nt_env(&env);
-    int row = 0;
-    md_layout_page(g_text, g_blocks, g_nblocks, g_cur, &env, nt_emit, &row);
+    md_view_render(&v, g_text, g_blocks, g_nblocks, g_cur);
 
     if (view_status) {
         const char *base = strrchr(g_path, '/');
@@ -321,9 +229,9 @@ static void render_preview(void)
 static void preview_next(void)
 {
     if (!g_text) return;
-    md_layout_env_t env;
-    nt_env(&env);
-    md_cursor_t nxt = md_layout_page(g_text, g_blocks, g_nblocks, g_cur, &env, NULL, NULL);
+    md_view_t v;
+    nt_view(&v);
+    md_cursor_t nxt = md_view_measure(&v, g_text, g_blocks, g_nblocks, g_cur);
     if (nxt.blk >= g_nblocks) return;                       /* already at the end */
     if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) return;
     if (g_back_n < (int)(sizeof(g_back) / sizeof(g_back[0]))) g_back[g_back_n++] = g_cur;
@@ -616,7 +524,7 @@ static void nt_destroy(void)
     nt_kbd_active = false;
     nt_editing = false;
     free_note();
-    clear_rows();
+    { md_view_t v; nt_view(&v); md_view_clear(&v); }
     view_cont = view_status = note_list = page_ind = NULL;
     edit_cont = edit_ta = NULL;
     for (int i = 0; i < NT_PAGE_COUNT; i++) pages[i] = NULL;
