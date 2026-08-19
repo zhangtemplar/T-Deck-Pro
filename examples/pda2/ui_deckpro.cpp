@@ -234,6 +234,20 @@ static const char *line_full_format(int max_c, const char *str1, const char *str
 
 static ui_indev_read_cb ui_get_gesture_dir = NULL;
 
+/* Last gesture direction handed to a screen. lv_indev latches gesture_dir from
+ * the moment a swipe is recognised until the *next* press begins, so the 10 ms
+ * poll below would otherwise deliver the same swipe ~100 times a second, for as
+ * long as nobody touches the panel again. See indev_get_gesture_dir(). */
+static lv_dir_t gesture_last_dir = LV_DIR_NONE;
+
+/* Adopt whatever direction is currently latched without acting on it, so a
+ * swipe made on a previous screen can't fire an event on the new one. */
+static void gesture_sync(void)
+{
+    lv_indev_t *indev = lv_indev_get_next(NULL);
+    gesture_last_dir = indev ? lv_indev_get_gesture_dir(indev) : LV_DIR_NONE;
+}
+
 static lv_obj_t *ui_Panel4;
 
 static lv_obj_t * menu_taskbar = NULL;
@@ -246,27 +260,37 @@ static lv_obj_t * menu_taskbar_wifi = NULL;
 static int page_num = 0;
 static int page_curr = 0;
 
-static struct menu_btn menu_btn_list[] = 
+/* Display order, top-left to bottom-right, nine per page. Icon positions are
+ * derived from the index in menu_btn_create's caller, so reordering an app is
+ * just moving its line here.
+ *
+ * Everyday apps come first; the hardware/diagnostic screens are parked at the
+ * end where they stay out of the way. */
+static struct menu_btn menu_btn_list[] =
 {
-    {SCREEN1_ID,  &img_lora,    "Lora",     23,     13},  // Page one
-    {SCREEN2_ID,  &img_setting, "Setting",  95,     13},
-    {SCREEN_GPS_ENHANCED_ID, &img_GPS, "GPS", 167, 13},
-    {SCREEN4_ID,  &img_wifi,    "Wifi",     23,     101},
-    {SCREEN5_ID,  &img_test,    "Test",     95,     101},
-    {SCREEN6_ID,  &img_batt,    "Battery",  167,    101},
-    {SCREEN7_ID,  &img_touch,   "Input",    23,     189},
-    {SCREEN8_ID,  &img_A7682E,  "A7682E",   95,     189},
-    {SCREEN12_ID, &img_motor,   "Motor",    167,    189},  // fills page-1 (Shutdown hidden)
-    {SCREEN11_ID,           &img_moon,    "Sleep",    23,    13},  // Page two
-    {SCREEN_CALCULATOR_ID, &img_calculator, "Calc",   95,    13},
-    {SCREEN_WEATHER_ID,    &img_weather,    "Weather", 167,  13},
-    {SCREEN_CALENDAR_ID,   &img_calendar,   "Calendar",23,   101},
-    {SCREEN_DICTIONARY_ID, &img_dictionary, "Dict",    95,   101},
-    {SCREEN_VOICE_AI_ID,   &img_voice_ai,   "AI Chat", 167,  101},
-    {SCREEN_RECORDER_ID,   &img_recorder,   "Recorder",23,   189},
-    {SCREEN_MUSIC_ID,      &img_PCM5102,    "Music",   95,   189},
-    {SCREEN_FILESERVER_ID, &img_SD,         "Files",   167,  189},
-    {SCREEN_IMAGE_ID,      &img_image,      "Images",  23,    13},  // Page three
+    {SCREEN_GPS_ENHANCED_ID, &img_GPS,        "GPS"},
+    {SCREEN11_ID,            &img_moon,       "Sleep"},
+    {SCREEN_CALCULATOR_ID,   &img_calculator, "Calc"},
+    {SCREEN_WEATHER_ID,      &img_weather,    "Weather"},
+    {SCREEN_CALENDAR_ID,     &img_calendar,   "Calendar"},
+    {SCREEN_DICTIONARY_ID,   &img_dictionary, "Dict"},
+    {SCREEN_VOICE_AI_ID,     &img_voice_ai,   "AI Chat"},
+    {SCREEN_RECORDER_ID,     &img_recorder,   "Recorder"},
+    {SCREEN_MUSIC_ID,        &img_PCM5102,    "Music"},
+
+    {SCREEN_FILESERVER_ID,   &img_SD,         "Files"},
+    {SCREEN_IMAGE_ID,        &img_image,      "Images"},
+    {SCREEN_READER_ID,       &img_book,       "Reader"},
+
+    /* Hardware / diagnostics */
+    {SCREEN1_ID,             &img_lora,       "Lora"},
+    {SCREEN2_ID,             &img_setting,    "Setting"},
+    {SCREEN4_ID,             &img_wifi,       "Wifi"},
+    {SCREEN5_ID,             &img_test,       "Test"},
+    {SCREEN6_ID,             &img_batt,       "Battery"},
+    {SCREEN7_ID,             &img_touch,      "Input"},
+    {SCREEN8_ID,             &img_A7682E,     "A7682E"},
+    {SCREEN12_ID,            &img_motor,      "Motor"},
 };
 
 /* The menu holds MENU_PAGE_ITEMS icons per page and grows a page at a time as
@@ -442,7 +466,12 @@ static void create0(lv_obj_t *parent)
         }
     }
 
+    /* Lay the icons out on a 3x3 grid per page, derived from the list index so
+     * menu_btn_list stays pure ordering (x: 23/95/167, y: 13/101/189). */
     for(int i = 0; i < MENU_BTN_NUM; i++) {
+        int slot = i % MENU_PAGE_ITEMS;
+        menu_btn_list[i].pos_x = 23 + 72 * (slot % 3);
+        menu_btn_list[i].pos_y = 13 + 88 * (slot / 3);
         menu_btn_create(menu_pages[i / MENU_PAGE_ITEMS], &menu_btn_list[i]);
     }
 
@@ -484,6 +513,7 @@ static void create0(lv_obj_t *parent)
 
 static void entry0(void) {
     ui_get_gesture_dir = menu_get_gesture_dir;
+    gesture_sync();                  /* don't act on the swipe that got us here */
     lv_timer_resume(touch_chk_timer);
     lv_timer_resume(taskbar_update_timer);
 
@@ -2960,9 +2990,19 @@ static lv_timer_t *menu_timer = NULL;
 
 static void indev_get_gesture_dir(lv_timer_t *t)
 {
-    if (!ui_get_gesture_dir) return;
     lv_indev_t * touch_indev = lv_indev_get_next(NULL);
-    lv_dir_t dir = lv_indev_get_gesture_dir(touch_indev);
+    lv_dir_t dir = touch_indev ? lv_indev_get_gesture_dir(touch_indev) : LV_DIR_NONE;
+
+    /* Act on the *transition* into a direction, not on the latched level: one
+     * swipe must move exactly one page. lv_indev resets gesture_dir to
+     * LV_DIR_NONE when the next press starts, which is what re-arms this.
+     * (Levels used to be harmless only because the menu had two pages, so the
+     * repeats just clamped at an end; with three they skip the middle page.) */
+    lv_dir_t prev = gesture_last_dir;
+    gesture_last_dir = dir;               /* track even with no callback bound */
+    if (dir == prev) return;
+
+    if (!ui_get_gesture_dir) return;
 
     if(dir == LV_DIR_RIGHT) { // right
         ui_get_gesture_dir(LV_DIR_RIGHT);
@@ -2975,6 +3015,7 @@ static void indev_get_gesture_dir(lv_timer_t *t)
 extern "C" void ui_set_gesture_callback(ui_indev_read_cb cb)
 {
     ui_get_gesture_dir = cb;
+    if (cb) gesture_sync();          /* don't inherit the previous screen's swipe */
     if (!touch_chk_timer) return;
     if (cb) lv_timer_resume(touch_chk_timer);
     else    lv_timer_pause(touch_chk_timer);
@@ -3163,6 +3204,9 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_image;
     scr_mgr_register(SCREEN_IMAGE_ID, &screen_image);
+
+    extern scr_lifecycle_t screen_reader;
+    scr_mgr_register(SCREEN_READER_ID, &screen_reader);
 
     scr_mgr_switch(SCREEN0_ID, false); // set root screen
     scr_mgr_set_anim(LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT);

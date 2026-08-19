@@ -720,6 +720,8 @@ void loop()
     recorder_keyboard_poll();
     extern void image_keyboard_poll();
     image_keyboard_poll();
+    extern void reader_keyboard_poll();
+    reader_keyboard_poll();
     file_server_loop();
     bq25896_runtime_maintain();
 

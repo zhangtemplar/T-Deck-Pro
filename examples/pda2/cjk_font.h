@@ -22,6 +22,10 @@ extern "C" {
  * no CJK) since it is populated during init, before any screen is created. */
 extern lv_font_t g_font_cn;
 
+/* Larger composition (montserrat 18 over the 16px CJK raster) for the reader's
+ * big-text mode. Same validity rules as g_font_cn. */
+extern lv_font_t g_font_cn_large;
+
 /**
  * @brief Register the SD filesystem driver, load the CJK TTF, build g_font_cn,
  *        and install it as the theme font. Call once after lvgl_init() and after

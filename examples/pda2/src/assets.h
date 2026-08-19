@@ -30,6 +30,7 @@ LV_IMG_DECLARE(img_voice_ai)
 LV_IMG_DECLARE(img_recorder)
 LV_IMG_DECLARE(img_moon)
 LV_IMG_DECLARE(img_image)
+LV_IMG_DECLARE(img_book)
 
 // font
 LV_FONT_DECLARE(Font_Mono_Bold_14)

@@ -41,6 +41,7 @@ extern void shared_spi_prepare_device(int cs_pin);
 #define CJK_PSRAM_HEADROOM (1024 * 1024)
 
 lv_font_t g_font_cn;
+lv_font_t g_font_cn_large;
 static lv_font_t *s_cjk_ttf = NULL;
 
 /* --------------------- LVGL FS driver over Arduino SD --------------------- */
@@ -376,6 +377,11 @@ void cjk_font_init(void)
     } else {
         cjk_primary = s_cjk_ttf;
     }
+
+    /* A second, larger composition for the reader's big-text mode: montserrat 18
+     * over the 16px CJK raster (which already chains on to the TTF). */
+    g_font_cn_large = lv_font_montserrat_18;
+    g_font_cn_large.fallback = r16 ? r16 : cjk_primary;
 
     if (cjk_primary) {
         g_font_cn.fallback = cjk_primary;
