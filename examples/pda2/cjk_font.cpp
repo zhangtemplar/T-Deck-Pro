@@ -10,8 +10,11 @@
  * custom font whose glyph bitmaps are already rendered — blitting is instant,
  * with no rasterization at runtime.
  *
- * A streaming TTF (via a minimal SD filesystem driver, letter 'S') is kept as a
- * lightweight deep fallback for the rare characters outside the compiled set.
+ * A streaming TTF (via a minimal SD filesystem driver, letter 'S') is used only
+ * when no raster blob is present. It is NOT chained behind the raster: drawing
+ * one glyph through it costs about a second, so a single rare character in a
+ * dictionary entry or an EPUB page would stall the UI. With a raster loaded,
+ * characters outside it draw as placeholder boxes instead.
  */
 #include "cjk_font.h"
 #include <Arduino.h>
@@ -36,6 +39,19 @@ extern void shared_spi_prepare_device(int cs_pin);
 
 /* Rendered-glyph LRU cache for the streaming fallback (PSRAM, via LVGL pool). */
 #define CJK_GLYPH_CACHE   (128 * 1024)
+
+/* Streaming-TTF fallback for glyphs outside the rasterized set.
+ *
+ * OFF whenever a raster blob is available. Rasterizing a glyph at runtime
+ * costs on the order of a second — that cost is the whole reason the offline
+ * raster exists — so a single rare character in a dictionary entry or an EPUB
+ * page stalls rendering for as long as it takes to draw, which looks exactly
+ * like a hung device. An empty placeholder box is a far better failure mode.
+ *
+ * The raster covers CJK Unified (0x4E00-0x9FFF), kana and punctuation but not
+ * Extension A; widen it with tools/rasterize_cjk_font.py --ext-a rather than
+ * turning this back on. */
+#define CJK_ENABLE_TTF_FALLBACK 0
 
 /* Whole-TTF-in-PSRAM threshold (only used when no pre-rasterized blob exists). */
 #define CJK_PSRAM_HEADROOM (1024 * 1024)
@@ -358,9 +374,15 @@ void cjk_font_init(void)
         shared_spi_unlock();
     }
 
-    if (!s_cjk_ttf) {
+    /* Only fall back to the TTF when there is no raster at all; with a raster
+     * present the runtime rasterization cost is not worth the rare glyph, and
+     * skipping it also returns CJK_GLYPH_CACHE to the LVGL pool. */
+    if (!s_cjk_ttf && (!have_raster || CJK_ENABLE_TTF_FALLBACK)) {
         s_cjk_ttf = lv_tiny_ttf_create_file_ex("S:" CJK_TTF_PATH, CJK_TTF_SIZE, CJK_GLYPH_CACHE);
         if (s_cjk_ttf) Serial.println("[CJK] streaming TTF fallback ready");
+    } else if (have_raster) {
+        Serial.println("[CJK] raster only; rare glyphs draw as boxes "
+                       "(runtime TTF rasterization would stall the UI)");
     }
 
     /* 3) Build the glyph-source chain and install it as the theme font.

@@ -593,7 +593,9 @@ static time_t utc_fields_to_epoch(int y, int mo, int d, int h, int mi, int sec)
  * allowed to extend boot: the whole thing is bounded by the NTP wait. */
 static void boot_time_sync(void)
 {
-    power_acquire(PWR_GPS);
+    /* NTP first, on its own. GPS is only worth powering here if the network
+     * couldn't set the clock — otherwise it would run (and log) for the whole
+     * linger window after every boot for no benefit. */
     bool wifi = power_wifi_connect(8000);
 
     bool have_time = false;
@@ -609,8 +611,11 @@ static void boot_time_sync(void)
         }
     }
 
-    /* Fall back to GPS time when the network was no help. */
+    /* Fall back to GPS time when the network was no help. Powering the
+     * receiver now also gives it a chance to cache a fix for the weather app
+     * during its warm window. */
     if (!have_time) {
+        power_acquire(PWR_GPS);
         uint16_t yr; uint8_t mo, dy, hh, mm, ss;
         ui_gps_get_data(&yr, &mo, &dy);
         ui_gps_get_time(&hh, &mm, &ss);
@@ -637,7 +642,7 @@ static void boot_time_sync(void)
         Serial.printf("[TIME] cached GPS fix %.4f,%.4f for weather\n", lat, lng);
     }
 
-    power_release(PWR_GPS);
+    if (!have_time) power_release(PWR_GPS);   /* only taken on the NTP-failed path */
     power_release(PWR_WIFI);
 }
 

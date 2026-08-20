@@ -61,7 +61,7 @@ static bool rail_on(pwr_rail_t rail)
          * re-negotiated — it comes back at its power-up defaults, so without
          * this the UART speed and UBX config no longer match and the parser
          * reads nothing at all. */
-        delay(300);
+        delay(1200);      /* the receiver needs ~1 s before it answers */
         gps_reinit();
         /* Hand the receiver a rough time and position so it doesn't have to
          * search blind — this is what actually shortens time-to-first-fix.

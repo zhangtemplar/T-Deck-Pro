@@ -16,6 +16,8 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
+#include <time.h>
 #include <string>
 
 #ifdef ARDUINO
@@ -108,6 +110,74 @@ bool dict_lookup_stardict_single(int dict_index, const char *word, dict_result_t
  * @return true if found.
  */
 bool dict_lookup_stardict_all(const char *word, dict_result_t &result);
+
+/* ---- dictionary selection ----
+ *
+ * Which dictionaries take part in lookups. Selection is persisted, and it also
+ * bounds memory: each loaded index sits in PSRAM (up to 4 MB apiece, never
+ * released on its own), so disabling a dictionary frees its index. */
+
+/** @brief Enable/disable a dictionary; frees its index when disabled. */
+void dict_set_enabled(int index, bool enabled);
+
+/** @brief True if the dictionary takes part in lookups (default: all enabled). */
+bool dict_is_enabled(int index);
+
+/** @brief Number of enabled dictionaries. */
+int dict_enabled_count(void);
+
+/** @brief Load selection from NVS; call after dict_scan_stardict(). */
+void dict_load_selection(void);
+
+/** @brief Persist the current selection to NVS. */
+void dict_save_selection(void);
+
+/** @brief Drop a dictionary's PSRAM index (it reloads on next use). */
+void dict_unload_index(int index);
+
+/**
+ * @brief Load indexes for enabled dictionaries and free the rest.
+ *
+ * Called when the app opens so the first lookup doesn't stall on a multi-MB
+ * read from SD. `progress` (may be NULL) is invoked before each load with the
+ * dictionary name and its 1-based position.
+ * @return number of indexes resident afterwards.
+ */
+int dict_preload_enabled(void (*progress)(const char *name, int n, int total));
+
+/* ---- query history ----
+ *
+ * Every lookup is appended to a two-column CSV on the card so the words you
+ * looked up can be reviewed (or imported into a flashcard deck) later:
+ *
+ *     word,date
+ *     "ephemeral",2026-08-17 09:14:03
+ *
+ * Fields follow RFC 4180: the word is quoted and any embedded quote doubled,
+ * so commas and quotation marks in a phrase survive. The date is local time,
+ * and is left empty when the clock has not been set this boot rather than
+ * recording a 1970 timestamp. */
+#define DICT_HISTORY_PATH "/dict_history.csv"
+
+/**
+ * @brief Format one history row (without newline) into `out`.
+ *        Pure string formatting, separated out so it can be tested off-device.
+ * @param tm Local time, or NULL when the clock is not set (date left empty).
+ * @return number of characters written (excluding the terminator).
+ */
+int dict_history_format_row(char *out, size_t cap, const char *word, const struct tm *tm);
+
+/** @brief Append a query to DICT_HISTORY_PATH, creating it with a header. */
+void dict_history_log(const char *word);
+
+/**
+ * @brief Look up a word in every enabled dictionary and concatenate the hits.
+ *
+ * Each entry is prefixed with "[bookname]". Definitions are joined into
+ * result.definition; result.found is true if any dictionary matched.
+ * @return true if at least one dictionary matched.
+ */
+bool dict_lookup_enabled(const char *word, dict_result_t &result);
 
 /**
  * @brief Get count of available StarDict dictionaries (after scan).

@@ -16,10 +16,48 @@
 #include "http_utils.h"
 
 #include <string.h>
+#include <time.h>
+
+/* Pure row formatting, deliberately outside the ARDUINO guard so it builds
+ * and can be tested on the host alongside the rest of the parsing code. */
+int dict_history_format_row(char *out, size_t cap, const char *word, const struct tm *tm)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    /* Shortest possible row is "", so anything smaller cannot be represented.
+     * Checking up front also keeps the cap arithmetic below from underflowing,
+     * since cap is unsigned. */
+    if (cap < 4) return 0;
+
+    size_t o = 0;
+    out[o++] = '"';
+
+    /* RFC 4180: wrap in quotes and double any quote inside, so a word or
+     * phrase containing a comma or quote doesn't split the row. */
+    for (const char *p = word ? word : ""; *p; p++) {
+        size_t need = (*p == '"') ? 2u : 1u;
+        if (o + need > cap - 3) break;       /* room for closing quote, comma, NUL */
+        if (*p == '"') out[o++] = '"';
+        out[o++] = *p;
+    }
+
+    out[o++] = '"';
+    out[o++] = ',';
+    out[o] = '\0';
+
+    /* strftime leaves the buffer undefined if the result does not fit, so only
+     * call it when the full timestamp definitely does. */
+    if (tm && (cap - o) >= sizeof("YYYY-MM-DD HH:MM:SS")) {
+        o += strftime(out + o, cap - o, "%Y-%m-%d %H:%M:%S", tm);
+    }
+    out[o] = '\0';
+    return (int)o;
+}
 
 #ifdef ARDUINO
 #include <SD.h>
 #include <WiFi.h>
+#include <Preferences.h>
 #include <cJSON.h>
 
 extern void shared_spi_lock(void);
@@ -38,6 +76,10 @@ static bool sd_care_init(void) {
 static dict_info_t stardict_dicts[MAX_STARDICT_DICTS];
 static int stardict_count = 0;
 static bool stardict_scanned = false;
+/* Which dictionaries take part in lookups; all on until a selection is read. */
+static bool stardict_enabled[MAX_STARDICT_DICTS] = {
+    true, true, true, true, true, true, true, true
+};
 
 // PSRAM-cached index for fast binary search
 struct idx_entry_t {
@@ -888,6 +930,193 @@ bool dict_lookup_offline_en(const char *word, dict_result_t &result)
     return true;
 }
 
+
+
+/* ---- query history ------------------------------------------------------- */
+
+void dict_history_log(const char *word)
+{
+    if (!word || word[0] == '\0') return;
+
+    /* An unset clock would stamp everything 1970; leave the field empty. */
+    time_t now;
+    time(&now);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    bool clock_ok = (tm.tm_year + 1900) >= 2024;
+
+    char row[160];
+    dict_history_format_row(row, sizeof(row), word, clock_ok ? &tm : NULL);
+
+    shared_spi_lock();
+    sd_care_init();
+    bool fresh = !SD.exists(DICT_HISTORY_PATH);
+    File f = SD.open(DICT_HISTORY_PATH, FILE_APPEND);
+    if (f) {
+        if (fresh) f.print("word,date\n");
+        f.print(row);
+        f.print("\n");
+        f.close();
+    } else {
+        Serial.println("[Dict] history: cannot open " DICT_HISTORY_PATH);
+    }
+    shared_spi_unlock();
+}
+
+/* ---- dictionary selection ------------------------------------------------ */
+
+void dict_unload_index(int index)
+{
+    if (index < 0 || index >= MAX_STARDICT_DICTS) return;
+    if (!psram_idx_data[index] && !psram_idx_entries[index]) return;
+
+    /* Both allocations belong to this dictionary; nothing else points at the
+     * index once the entry table is gone. */
+    if (psram_idx_entries[index]) { free(psram_idx_entries[index]); psram_idx_entries[index] = NULL; }
+    if (psram_idx_data[index])    { free(psram_idx_data[index]);    psram_idx_data[index] = NULL; }
+    psram_idx_count[index] = 0;
+    Serial.printf("[Dict] Unloaded index %d (freed PSRAM)\n", index);
+}
+
+void dict_set_enabled(int index, bool enabled)
+{
+    if (index < 0 || index >= MAX_STARDICT_DICTS) return;
+    if (stardict_enabled[index] == enabled) return;
+    stardict_enabled[index] = enabled;
+    if (!enabled) dict_unload_index(index);   /* reclaim the PSRAM immediately */
+}
+
+bool dict_is_enabled(int index)
+{
+    if (index < 0 || index >= MAX_STARDICT_DICTS) return false;
+    return stardict_enabled[index];
+}
+
+int dict_enabled_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < stardict_count; i++) if (stardict_enabled[i]) n++;
+    return n;
+}
+
+/* Selection is keyed by dictionary name, not index: adding or removing files
+ * on the card reorders the scan, and an index-based key would silently enable
+ * the wrong dictionary.
+ *
+ * The name is hashed rather than used directly because NVS keys are limited to
+ * 15 characters (NVS_KEY_NAME_MAX_SIZE) — a truncated bookname would both
+ * overflow that and collide between dictionaries sharing a prefix. */
+static void dict_pref_key(int i, char *out, size_t cap)
+{
+    uint32_t h = 2166136261u;                       /* FNV-1a */
+    for (const char *p = stardict_dicts[i].name.c_str(); *p; p++) {
+        h ^= (uint8_t)*p;
+        h *= 16777619u;
+    }
+    snprintf(out, cap, "d%08x", (unsigned)h);       /* 9 chars, fits NVS */
+}
+
+void dict_load_selection(void)
+{
+    Preferences p;
+    p.begin("dict", true);
+    for (int i = 0; i < stardict_count; i++) {
+        char key[16];
+        dict_pref_key(i, key, sizeof(key));
+        stardict_enabled[i] = p.getBool(key, true);   /* default: enabled */
+    }
+    p.end();
+}
+
+void dict_save_selection(void)
+{
+    Preferences p;
+    p.begin("dict", false);
+    for (int i = 0; i < stardict_count; i++) {
+        char key[16];
+        dict_pref_key(i, key, sizeof(key));
+        p.putBool(key, stardict_enabled[i]);
+    }
+    p.end();
+}
+
+int dict_preload_enabled(void (*progress)(const char *name, int n, int total))
+{
+    dict_scan_stardict();
+
+    int total = dict_enabled_count();
+    int done = 0, resident = 0;
+
+    shared_spi_lock();
+    sd_care_init();
+    for (int i = 0; i < stardict_count; i++) {
+        if (!stardict_enabled[i]) {
+            dict_unload_index(i);            /* deselected: give the PSRAM back */
+            continue;
+        }
+        if (!psram_idx_entries[i]) {
+            done++;
+            if (progress) progress(stardict_dicts[i].name.c_str(), done, total);
+            load_stardict_index(i);
+        }
+        if (psram_idx_entries[i]) resident++;
+    }
+    shared_spi_unlock();
+
+    Serial.printf("[Dict] %d/%d enabled dictionaries resident\n", resident, total);
+    return resident;
+}
+
+bool dict_lookup_enabled(const char *word, dict_result_t &result)
+{
+    result.found = false;
+    dict_scan_stardict();
+    if (stardict_count == 0) return false;
+
+    string combined;
+    bool any = false;
+    Serial.printf("[Dict] querying %d of %d dictionaries for \"%s\"\n",
+                  dict_enabled_count(), stardict_count, word ? word : "");
+
+    shared_spi_lock();
+    sd_care_init();
+    for (int i = 0; i < stardict_count; i++) {
+        if (!stardict_enabled[i]) continue;
+
+        if (!psram_idx_entries[i]) load_stardict_index(i);
+
+        dict_result_t one;
+        one.found = false;
+        dict_info_t &d = stardict_dicts[i];
+        bool found = psram_idx_entries[i]
+                   ? stardict_lookup_psram(i, word, one)
+                   : stardict_lookup_in(d.idx_path, d.dict_path, word, one, d.sametypesequence);
+        Serial.printf("[Dict]   %s: %s\n", d.name.c_str(), found ? "hit" : "miss");
+        if (!found) continue;
+
+        if (any) combined += "\n\n";
+        combined += "[" + string(d.name.c_str()) + "]\n";
+        combined += one.definition;
+
+        if (!any) {
+            /* Keep the headword and phonetics from the first dictionary that
+             * had them; later entries only contribute their definition. */
+            result.word = one.word;
+            result.phonetic = one.phonetic;
+            result.part_of_speech = one.part_of_speech;
+        }
+        any = true;
+    }
+    shared_spi_unlock();
+
+    if (any) {
+        result.definition = combined;
+        result.found = true;
+    }
+    return any;
+}
+
+
 #else
 // Desktop stubs
 bool dict_lookup_online(const char *word, dict_result_t &result) { result.found = false; return false; }
@@ -901,4 +1130,13 @@ bool dict_lookup_stardict_all(const char *word, dict_result_t &result) { result.
 int dict_get_stardict_count() { return 0; }
 const char *dict_get_stardict_name(int index) { return NULL; }
 int dict_prefix_search(const char *prefix, const char **results, int max_results, int dict_index) { return 0; }
+void dict_set_enabled(int index, bool enabled) { (void)index; (void)enabled; }
+bool dict_is_enabled(int index) { (void)index; return false; }
+int dict_enabled_count(void) { return 0; }
+void dict_load_selection(void) {}
+void dict_save_selection(void) {}
+void dict_unload_index(int index) { (void)index; }
+int dict_preload_enabled(void (*progress)(const char *, int, int)) { (void)progress; return 0; }
+bool dict_lookup_enabled(const char *word, dict_result_t &result) { (void)word; result.found = false; return false; }
+void dict_history_log(const char *word) { (void)word; }
 #endif

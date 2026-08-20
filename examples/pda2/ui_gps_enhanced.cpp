@@ -120,15 +120,21 @@ static void update_overview()
             cur_year, cur_month, cur_day,
             cur_hour, cur_min, cur_sec);
     } else {
+        /* Show how many bytes have come back from the receiver. It separates
+         * the two very different failures that both look like "no fix":
+         * a dead UART link (stays 0) versus a genuine cold search (climbs). */
+        uint32_t chars = gps_chars_processed();
         lv_label_set_text_fmt(lbl_overview,
             "Status: No Fix\n"
-            "Satellites: %lu\n\n"
-            "Searching...\n"
-            "Place outdoors with\n"
-            "clear sky view.\n\n"
+            "Satellites: %lu\n"
+            "Receiver: %s (%lu bytes)\n\n"
+            "%s\n\n"
             "Date: %04d-%02d-%02d\n"
             "Time: %02d:%02d:%02d UTC",
             cur_sats,
+            chars > 0 ? "talking" : "SILENT", (unsigned long)chars,
+            chars > 0 ? "Searching...\nPlace outdoors with\nclear sky view."
+                      : "No data from GPS.\nLink or power problem,\nnot a cold start.",
             cur_year, cur_month, cur_day,
             cur_hour, cur_min, cur_sec);
     }

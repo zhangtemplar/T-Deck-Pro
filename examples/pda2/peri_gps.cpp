@@ -58,10 +58,33 @@ bool gps_init(void)
     return result;
 }
 
-/* Re-run the link setup after the receiver has been power cycled. The parser
- * task already exists, so this only redoes the negotiation. */
+/* Is the receiver already streaming NMEA at the expected rate? */
+static bool gps_link_probe(uint32_t ms)
+{
+    SerialGPS.begin(38400, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
+    uint32_t t0 = millis();
+    int starts = 0;
+    while (millis() - t0 < ms) {
+        while (SerialGPS.available()) {
+            if (SerialGPS.read() == '$' && ++starts >= 2) return true;
+        }
+        delay(10);
+    }
+    return false;
+}
+
+/* Re-run the link setup after the receiver has been power cycled.
+ *
+ * Probe before negotiating. gps_link_setup() sends UBX-CFG-CFG clear/load,
+ * which resets the receiver's configuration to defaults, and its four ack
+ * waits cost up to ~3 s per baud attempt. Doing that on every power-on is both
+ * slow and needlessly destructive when the receiver is already talking. */
 bool gps_reinit(void)
 {
+    if (gps_link_probe(1500)) {
+        Serial.println("[GPS] link alive at 38400, no re-negotiation needed");
+        return true;
+    }
     bool ok = gps_link_setup();
     Serial.printf("[GPS] re-init after power-on: %s\n", ok ? "ok" : "FAILED");
     return ok;
@@ -133,87 +156,70 @@ void gps_get_satellites(uint32_t *vsat)
     *vsat = gps_vsat;   // Visible Satellites
 }
 
+/* Characters the parser has consumed from the receiver. Zero means the UART
+ * link is dead (wrong baud, unpowered, miswired) — a genuine cold start still
+ * shows this climbing while the fix count stays at zero. */
+uint32_t gps_chars_processed(void)
+{
+    return (uint32_t)gps.charsProcessed();
+}
+
 void gps_get_speed(double *speed)
 {
     *speed = gps_speed;
 }
 
 /* clang-format on */
+/* Cache the latest values, and log only sparingly.
+ *
+ * This used to print every field on every parsed sentence — dozens of
+ * Serial.print calls several times a second. That was tolerable when the task
+ * only ran inside the GPS screen, but the receiver is now also powered during
+ * the boot time-sync window and by the weather app, so it drowned out the log
+ * of whatever app was actually in use. At 115200 baud it also costs real time
+ * in a task that runs continuously. Report fix transitions, then throttle. */
+#define GPS_LOG_INTERVAL_MS 30000
+
 void displayInfo()
 {
-    Serial.print(F("Location: "));
-    if (gps.location.isValid())
-    {
+    static bool last_valid = false;
+    static uint32_t last_log = 0;
+
+    bool valid = gps.location.isValid();
+
+    if (valid) {
         gps_lat = gps.location.lat();
         gps_lng = gps.location.lng();
-        Serial.print(gps_lat, 6);
-        Serial.print(F(","));
-        Serial.print(gps_lng, 6);
     }
-    else
-    {
-        Serial.print(F("INVALID"));
-    }
-
-    Serial.print(F("  Date/Time: "));
-    if (gps.date.isValid())
-    {
-        gps_year = gps.date.year();
+    if (gps.date.isValid()) {
+        gps_year  = gps.date.year();
         gps_month = gps.date.month();
-        gps_day = gps.date.day();
-        Serial.print(gps_month);
-        Serial.print(F("/"));
-        Serial.print(gps_day);
-        Serial.print(F("/"));
-        Serial.print(gps_year);
+        gps_day   = gps.date.day();
     }
-    else
-    {
-        Serial.print(F("INVALID"));
-    }
-
-    Serial.print(F(" "));
-    if (gps.time.isValid())
-    {
-        gps_hour = gps.time.hour();
+    if (gps.time.isValid()) {
+        gps_hour   = gps.time.hour();
         gps_minute = gps.time.minute();
         gps_second = gps.time.second();
-
-        if (gps_hour < 10)
-            Serial.print(F("0"));
-        Serial.print(gps_hour);
-        Serial.print(F(":"));
-        if (gps_minute < 10)
-            Serial.print(F("0"));
-        Serial.print(gps_minute);
-        Serial.print(F(":"));
-        if (gps_second < 10)
-            Serial.print(F("0"));
-        Serial.print(gps_second);
-        Serial.print(F("."));
     }
-    else
-    {
-        Serial.print(F("INVALID"));
-    }
+    if (gps.satellites.isValid()) gps_vsat  = gps.satellites.value();
+    if (gps.speed.isValid())      gps_speed = gps.speed.kmph();
 
-    Serial.print(F("  Satellites: "));
-    if(gps.satellites.isValid())
-    {
-        gps_vsat = gps.satellites.value();
-        Serial.print(gps_vsat);
-        Serial.print(F(" "));
-    }
+    uint32_t now = millis();
+    bool changed = (valid != last_valid);
+    if (!changed && (now - last_log) < GPS_LOG_INTERVAL_MS) return;
+    last_valid = valid;
+    last_log = now;
 
-    Serial.print(F("  Speed: "));
-    if(gps.speed.isValid())
-    {
-        gps_speed = gps.speed.kmph();
-        Serial.print(gps_speed);
-        Serial.print(F(" "));
+    if (valid) {
+        Serial.printf("[GPS] %s %.6f,%.6f  %lu sats  %.1f km/h  %04u-%02u-%02u %02u:%02u:%02uZ\n",
+                      changed ? "fix" : "...", gps_lat, gps_lng,
+                      (unsigned long)gps_vsat, gps_speed,
+                      gps_year, gps_month, gps_day, gps_hour, gps_minute, gps_second);
+    } else {
+        Serial.printf("[GPS] %s (%lu sats visible, %lu bytes from receiver)\n",
+                      changed ? "fix lost" : "searching",
+                      (unsigned long)gps_vsat, (unsigned long)gps.charsProcessed());
     }
-
-    Serial.println();
 }
 /* clang-format off */
 

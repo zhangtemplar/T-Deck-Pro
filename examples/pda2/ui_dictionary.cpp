@@ -22,10 +22,10 @@
 #define DICT_PAGE_COUNT 2
 
 static lv_obj_t *pages[DICT_PAGE_COUNT] = {};
-static lv_obj_t *page_ind = NULL;
 static int dict_page = 0;
 
 static lv_obj_t *search_ta = NULL;
+static lv_obj_t *result_cont = NULL;   /* scrolls; holds result_label */
 static lv_obj_t *result_label = NULL;
 static lv_obj_t *status_label = NULL;
 static lv_obj_t *dict_list = NULL;
@@ -41,7 +41,7 @@ static void update_status(void)
     if (!status_label) return;
     int total = dict_get_stardict_count();
     if (total > 0) {
-        lv_label_set_text_fmt(status_label, "%d/%d dict(s)  [enter] switch page",
+        lv_label_set_text_fmt(status_label, "%d/%d dict(s) enabled",
                               dict_enabled_count(), total);
     } else if (dict_offline_en_available()) {
         lv_label_set_text(status_label, "Offline dict on SD");
@@ -57,6 +57,10 @@ static void do_search()
 
     Serial.printf("[Dict] Searching: \"%s\"\n", word);
     lv_label_set_text(status_label, "Searching...");
+
+    /* Record the query before looking it up, so the history reflects what was
+     * asked for whether or not any dictionary had it. */
+    dict_history_log(word);
 
     dict_result_t result;
     bool found = false;
@@ -82,7 +86,9 @@ static void do_search()
             for (int i = 0; i < n && pos < (int)sizeof(buf) - 1; i++)
                 pos += snprintf(buf + pos, sizeof(buf) - pos, "  %s\n", suggestions[i]);
             lv_label_set_text(result_label, buf);
+            if (result_cont) lv_obj_scroll_to_y(result_cont, 0, LV_ANIM_OFF);
             update_status();
+            ui_disp_full_refr();
             return;
         }
     }
@@ -93,19 +99,55 @@ static void do_search()
 
     if (found && result.found) {
         static char buf[4096];          /* several dictionaries can contribute */
-        snprintf(buf, sizeof(buf), "%s  %s\n%s",
-                 result.phonetic.c_str(),
-                 result.part_of_speech.c_str(),
-                 result.definition.c_str());
+        int n = snprintf(buf, sizeof(buf), "%s  %s\n%s",
+                         result.phonetic.c_str(),
+                         result.part_of_speech.c_str(),
+                         result.definition.c_str());
+        bool truncated = (n >= (int)sizeof(buf));
+        Serial.printf("[Dict] result %d bytes%s -> label\n",
+                      truncated ? (int)sizeof(buf) - 1 : n, truncated ? " (truncated)" : "");
         lv_label_set_text(result_label, buf);
+        if (result_cont) lv_obj_scroll_to_y(result_cont, 0, LV_ANIM_OFF);
         update_status();
     } else {
+        Serial.println("[Dict] no result to display");
         lv_label_set_text(result_label, "Word not found.");
         lv_label_set_text(status_label, "Try WiFi for online lookup.");
     }
+
+    /* Ask for the repaint explicitly. Every other screen does this after
+     * changing content; this one relied on LVGL's implicit invalidation, which
+     * is no longer reliable here now that the refresh timer is throttled while
+     * keys are arriving — and Enter is itself a keystroke. */
+    ui_disp_full_refr();
 }
 
+/* ---- scrolling the result ----
+ *
+ * Definitions routinely run past one screen, more so now that several
+ * dictionaries can contribute. Scroll a page at a time with LV_ANIM_OFF:
+ * smooth scrolling would repaint the panel for every animation step, where
+ * this costs exactly one refresh per press. Touch dragging works too. */
+
+static void scroll_result(int dir)
+{
+    if (!result_cont) return;
+    lv_coord_t h = lv_obj_get_height(result_cont);
+    lv_coord_t step = (h > 60) ? (h - 24) : h;      /* keep a little overlap */
+    lv_obj_scroll_by(result_cont, 0, dir > 0 ? -step : step, LV_ANIM_OFF);
+    ui_disp_full_refr();
+}
+
+static void scroll_up_cb(lv_event_t *e)   { scroll_result(-1); }
+static void scroll_down_cb(lv_event_t *e) { scroll_result(+1); }
+
 /* ---- page 2: which dictionaries to use ---- */
+
+static void open_dicts_cb(lv_event_t *e)
+{
+    show_dict_page(1);
+    ui_disp_full_refr();
+}
 
 static void dict_toggle_cb(lv_event_t *e)
 {
@@ -150,8 +192,8 @@ static void refresh_dict_list(void)
 
 /* ---- pages ---- */
 
-static const char *page_titles[] = {"Search", "Dictionaries"};
-
+/* No page indicator: the Dicts button already says where the other page is,
+ * and dropping it gives the whole bottom strip back to the result. */
 static void show_dict_page(int pg)
 {
     dict_page = pg;
@@ -160,8 +202,6 @@ static void show_dict_page(int pg)
         if (i == pg) lv_obj_clear_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
         else         lv_obj_add_flag(pages[i], LV_OBJ_FLAG_HIDDEN);
     }
-    if (page_ind)
-        lv_label_set_text_fmt(page_ind, "%s [%d/%d]", page_titles[pg], pg + 1, DICT_PAGE_COUNT);
     if (pg == 1) refresh_dict_list();
 }
 
@@ -175,19 +215,16 @@ void dict_keyboard_poll()
     keypad_set_flag();
 
     if (dict_page != 0) {
-        /* On the dictionary list, enter goes back to the search page. */
-        if (c == '\n' || c == '\b') { show_dict_page(0); ui_disp_full_refr(); }
-        return;
+        /* Any key returns to the search page rather than being swallowed
+         * here — otherwise typing on this page looks like a dead keyboard. */
+        show_dict_page(0);
+        ui_disp_full_refr();
+        if (c == '\n' || c == '\b') return;
+        /* fall through so the keystroke still lands in the search box */
     }
 
     if (c == '\n') {
-        const char *text = lv_textarea_get_text(search_ta);
-        if (!text || text[0] == '\0') {
-            show_dict_page(1);          /* empty box: go pick dictionaries */
-            ui_disp_full_refr();
-        } else {
-            do_search();
-        }
+        do_search();                    /* Enter always searches */
     } else if (c == '\b') {
         const char *text = lv_textarea_get_text(search_ta);
         if (!text || text[0] == '\0') {
@@ -213,7 +250,7 @@ static void dict_back_cb(lv_event_t *e)
 static lv_obj_t *make_page(lv_obj_t *parent)
 {
     lv_obj_t *pg = lv_obj_create(parent);
-    lv_obj_set_size(pg, 236, 268);
+    lv_obj_set_size(pg, 236, 290);      /* y=28..318; nothing below it now */
     lv_obj_align(pg, LV_ALIGN_TOP_MID, 0, 28);
     lv_obj_set_style_border_width(pg, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(pg, LV_OPA_TRANSP, LV_PART_MAIN);
@@ -235,18 +272,24 @@ static void dict_create(lv_obj_t *parent)
 {
     scr_back_btn_create(parent, "Dictionary", dict_back_cb);
 
-    page_ind = lv_label_create(parent);
-    lv_obj_set_style_text_font(page_ind, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(page_ind, LV_ALIGN_BOTTOM_RIGHT, -4, -2);
-
     /* ---- page 0: search ---- */
     pages[0] = make_page(parent);
     lv_obj_set_flex_flow(pages[0], LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(pages[0], 4, LV_PART_MAIN);
 
-    result_label = lv_label_create(pages[0]);
+    /* The label sizes itself to the full text; the container clips and scrolls
+     * it. The scrollbar is left visible so it is obvious when there is more. */
+    result_cont = lv_obj_create(pages[0]);
+    lv_obj_set_width(result_cont, lv_pct(100));
+    lv_obj_set_flex_grow(result_cont, 1);
+    lv_obj_set_style_border_width(result_cont, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(result_cont, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(result_cont, 0, LV_PART_MAIN);
+    lv_obj_set_scroll_dir(result_cont, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(result_cont, LV_SCROLLBAR_MODE_ON);
+
+    result_label = lv_label_create(result_cont);
     lv_obj_set_width(result_label, lv_pct(100));
-    lv_obj_set_flex_grow(result_label, 1);
     lv_obj_set_style_text_font(result_label, &g_font_cn, LV_PART_MAIN);
     lv_label_set_long_mode(result_label, LV_LABEL_LONG_WRAP);
     lv_label_set_text(result_label, "");
@@ -255,6 +298,36 @@ static void dict_create(lv_obj_t *parent)
     lv_obj_set_width(status_label, lv_pct(100));
     lv_obj_set_style_text_font(status_label, &g_font_cn, LV_PART_MAIN);
     lv_obj_set_style_text_color(status_label, lv_palette_main(LV_PALETTE_GREY), LV_PART_MAIN);
+
+    /* Controls row. These are buttons rather than shortcuts because every
+     * printable key belongs to the search box, and Enter has to mean search —
+     * overloading it previously stranded you on a page that ignored typing. */
+    lv_obj_t *row = lv_obj_create(pages[0]);
+    lv_obj_set_size(row, lv_pct(100), 30);
+    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    struct { const char *txt; lv_event_cb_t cb; lv_coord_t w; lv_coord_t x; } ctrls[] = {
+        { LV_SYMBOL_LIST " Dicts", open_dicts_cb,  110,   0 },
+        { LV_SYMBOL_UP,            scroll_up_cb,    50, 118 },
+        { LV_SYMBOL_DOWN,          scroll_down_cb,  50, 174 },
+    };
+    for (unsigned i = 0; i < sizeof(ctrls) / sizeof(ctrls[0]); i++) {
+        lv_obj_t *b = lv_btn_create(row);
+        lv_obj_set_size(b, ctrls[i].w, 26);
+        lv_obj_set_pos(b, ctrls[i].x, 0);
+        lv_obj_set_style_radius(b, 6, LV_PART_MAIN);
+        lv_obj_set_style_border_width(b, 1, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(b, lv_color_white(), LV_PART_MAIN);
+        lv_obj_add_event_cb(b, ctrls[i].cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, ctrls[i].txt);
+        lv_obj_set_style_text_color(l, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_center(l);
+    }
 
     search_ta = lv_textarea_create(pages[0]);
     /* No cursor blink: each blink is a full e-ink refresh, so a focused
@@ -270,7 +343,7 @@ static void dict_create(lv_obj_t *parent)
     /* ---- page 1: dictionary selection ---- */
     pages[1] = make_page(parent);
     dict_list = lv_list_create(pages[1]);
-    lv_obj_set_size(dict_list, 232, 264);
+    lv_obj_set_size(dict_list, 232, 286);
     lv_obj_align(dict_list, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_pad_all(dict_list, 2, LV_PART_MAIN);
     lv_obj_set_style_text_font(dict_list, &g_font_cn, LV_PART_MAIN);
@@ -293,7 +366,7 @@ static void dict_exit(void) { power_release(PWR_WIFI); ui_disp_full_refr(); }
 static void dict_destroy(void)
 {
     dict_kbd_active = false;
-    search_ta = result_label = status_label = dict_list = page_ind = NULL;
+    search_ta = result_label = result_cont = status_label = dict_list = NULL;
     for (int i = 0; i < DICT_PAGE_COUNT; i++) pages[i] = NULL;
 }
 
