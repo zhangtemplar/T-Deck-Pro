@@ -6,6 +6,7 @@
 #include "Arduino.h"
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
+#include "power_mgr.h"
 #include "lunar_calendar.h"
 #include <time.h>
 #include "cjk_font.h"
@@ -210,8 +211,8 @@ static void cal_create(lv_obj_t *parent)
     cal_kbd_active = true;
 }
 
-static void cal_entry(void) { ui_disp_full_refr(); }
-static void cal_exit(void) { ui_disp_full_refr(); }
+static void cal_entry(void) { power_acquire(PWR_WIFI); ui_disp_full_refr(); }
+static void cal_exit(void) { power_release(PWR_WIFI); ui_disp_full_refr(); }
 static void cal_destroy(void)
 {
     cal_kbd_active = false;

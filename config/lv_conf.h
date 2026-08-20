@@ -82,7 +82,11 @@
  *====================*/
 
 /*Default display refresh period. LVG will redraw changed areas with this period time*/
-#define LV_DISP_DEF_REFR_PERIOD 500      /*[ms]*/
+/* How often LVGL looks for invalidated areas. This is NOT a refresh rate: the
+ * panel is only written when something actually changed. At 500 ms a keystroke
+ * could wait half a second before rendering even started, which dominated
+ * typing latency. Bursts are coalesced by epd_typing_throttle() in factory.ino. */
+#define LV_DISP_DEF_REFR_PERIOD 100      /*[ms]*/
 
 /*Input device read period in milliseconds*/
 #define LV_INDEV_DEF_READ_PERIOD 10     /*[ms]*/

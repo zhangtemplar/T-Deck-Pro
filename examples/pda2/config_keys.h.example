@@ -39,3 +39,11 @@
 // ---- Default location for Weather when GPS is unavailable ----
 // Format: "lat=XX.XX&lon=YY.YY" (use https://www.latlong.net to find coordinates)
 // #define WEATHER_DEFAULT_COORDS  "lat=37.49&lon=-122.27"
+
+// ---------------------------------------------------------------------------
+// Optional: u-blox AssistNow Online token (free tier via Thingstream).
+// Without it the GPS is still aided with the NTP clock and the last known
+// position, which is most of the benefit. With it, the full ephemeris set is
+// downloaded over WiFi whenever the receiver powers up, which brings a cold
+// start down to a few seconds.
+// #define UBLOX_ASSISTNOW_TOKEN "YOUR_ASSISTNOW_TOKEN_HERE"

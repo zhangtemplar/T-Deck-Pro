@@ -366,6 +366,10 @@ static void calc_create(lv_obj_t *parent)
     lv_label_set_text(history_list, "Enter to eval, Bksp to back");
 
     expr_ta = lv_textarea_create(cont);
+    /* No cursor blink: each blink is a full e-ink refresh, so a focused
+     * field would repaint the panel twice a second forever. */
+
+    lv_obj_set_style_anim_time(expr_ta, 0, LV_PART_CURSOR);
     lv_obj_set_width(expr_ta, lv_pct(100));
     lv_obj_set_height(expr_ta, 36);
     lv_textarea_set_placeholder_text(expr_ta, "e.g. sin(45)+2*3");

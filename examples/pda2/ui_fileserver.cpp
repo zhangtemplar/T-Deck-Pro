@@ -11,6 +11,7 @@
 #include "ui_deckpro_port.h"
 #include "factory.h"
 #include "file_server.h"
+#include "power_mgr.h"
 #include "src/assets.h"
 #include <WiFi.h>
 
@@ -123,6 +124,8 @@ static void fs_create(lv_obj_t *parent)
 
 static void fs_entry(void)
 {
+    /* Serving files needs the network for as long as the screen is open. */
+    power_wifi_connect(8000);
     file_server_start();            /* no-op / false if WiFi not up yet */
     fs_update();
     if (!fs_timer) fs_timer = lv_timer_create(fs_poll_cb, 1000, NULL);
@@ -133,6 +136,7 @@ static void fs_exit(void)
 {
     if (fs_timer) { lv_timer_del(fs_timer); fs_timer = NULL; }
     file_server_stop();
+    power_release(PWR_WIFI);
     ui_disp_full_refr();
 }
 

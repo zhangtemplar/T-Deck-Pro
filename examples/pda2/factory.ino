@@ -17,6 +17,9 @@
 #include "ui_deckpro.h"
 #include "cjk_font.h"
 #include "file_server.h"
+#include "power_mgr.h"
+#include "lowpower_mgr.h"
+#include "ui_deckpro_port.h"
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include "factory.h"
 #include "peripheral.h"
@@ -218,6 +221,37 @@ static void flush_epd_bitmap(const lv_area_t *area)
     shared_spi_unlock();
 }
 
+/* Hold the panel update off briefly while keys are still arriving. A refresh
+ * blocks for a few hundred ms and nothing else runs during it, so refreshing
+ * per keystroke makes typing feel like one character per screen update. Pausing
+ * LVGL's refresh timer turns a burst of keys into a single refresh; the
+ * deadline guarantees the screen still updates during sustained typing.
+ *
+ * This throttles the refresh timer rather than the flush itself: flush_cb has
+ * to complete once LVGL calls it, and flush_timer_cb below never runs (the
+ * driver's render_start_cb is commented out where it is registered). */
+#define EPD_TYPING_GAP_MS   90
+#define EPD_TYPING_MAX_MS   700
+
+static void epd_typing_throttle(void)
+{
+    lv_disp_t *disp = lv_disp_get_default();
+    if(disp == NULL || disp->refr_timer == NULL) return;
+
+    static uint32_t hold_since = 0;
+    uint32_t now = millis();
+
+    if(now - keypad_last_activity_ms() < EPD_TYPING_GAP_MS) {
+        if(hold_since == 0) hold_since = now;
+        if(now - hold_since < EPD_TYPING_MAX_MS) {
+            lv_timer_pause(disp->refr_timer);
+            return;
+        }
+    }
+    hold_since = 0;
+    lv_timer_resume(disp->refr_timer);
+}
+
 static void flush_timer_cb(lv_timer_t *t)
 {
     static int idx = 0;
@@ -276,6 +310,7 @@ static void touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     uint8_t touched = hyn_touch_get_point(&last_x, &last_y, 1);
     if(touched) {
         data->state = LV_INDEV_STATE_PR;
+        lowpower_note_activity();
 
         Serial.printf("x = %d, y = %d\n", last_x, last_y);
     } else {
@@ -537,6 +572,75 @@ static void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
     }
 }
 
+
+/* Days-from-civil, so GPS UTC can seed the clock without timegm(). */
+static time_t utc_fields_to_epoch(int y, int mo, int d, int h, int mi, int sec)
+{
+    y -= (mo <= 2);
+    long era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = era * 146097L + (long)doe - 719468L;
+    return (time_t)days * 86400 + h * 3600 + mi * 60 + sec;
+}
+
+/* One short window at boot with WiFi and GPS up, then both back down.
+ *
+ * NTP is the reliable source and usually answers in a second or two. GPS runs
+ * alongside it because it also carries UTC (useful where there is no WiFi) and
+ * because a position fix here gets cached for the weather app. Neither is
+ * allowed to extend boot: the whole thing is bounded by the NTP wait. */
+static void boot_time_sync(void)
+{
+    power_acquire(PWR_GPS);
+    bool wifi = power_wifi_connect(8000);
+
+    bool have_time = false;
+    if (wifi) {
+        struct tm tm;
+        if (getLocalTime(&tm, 5000)) {
+            have_time = true;
+            Serial.printf("[TIME] NTP synced %04d-%02d-%02d %02d:%02d:%02d\n",
+                          tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                          tm.tm_hour, tm.tm_min, tm.tm_sec);
+        } else {
+            Serial.println("[TIME] NTP did not answer in time");
+        }
+    }
+
+    /* Fall back to GPS time when the network was no help. */
+    if (!have_time) {
+        uint16_t yr; uint8_t mo, dy, hh, mm, ss;
+        ui_gps_get_data(&yr, &mo, &dy);
+        ui_gps_get_time(&hh, &mm, &ss);
+        if (yr >= 2020) {
+            struct timeval tv = { .tv_sec = utc_fields_to_epoch(yr, mo, dy, hh, mm, ss),
+                                  .tv_usec = 0 };
+            settimeofday(&tv, NULL);
+            have_time = true;
+            Serial.printf("[TIME] GPS synced %04u-%02u-%02u %02u:%02u:%02u UTC\n",
+                          yr, mo, dy, hh, mm, ss);
+        }
+    }
+    if (!have_time) Serial.println("[TIME] clock not set this boot");
+
+    /* Cache a fix if we happened to get one; the weather app reads this. */
+    double lat = 0, lng = 0;
+    ui_gps_get_coord(&lat, &lng);
+    if (lat != 0 || lng != 0) {
+        Preferences p;
+        p.begin("weather", false);
+        p.putFloat("gps_lat", (float)lat);
+        p.putFloat("gps_lon", (float)lng);
+        p.end();
+        Serial.printf("[TIME] cached GPS fix %.4f,%.4f for weather\n", lat, lng);
+    }
+
+    power_release(PWR_GPS);
+    power_release(PWR_WIFI);
+}
+
 void setup()
 {
     gpio_hold_dis((gpio_num_t)BOARD_6609_EN);
@@ -682,19 +786,17 @@ void setup()
 
     digitalWrite(BOARD_KEYBOARD_LED, LOW);
     digitalWrite(BOARD_MOTOR_PIN, HIGH);
-    digitalWrite(BOARD_6609_EN, HIGH);
-    digitalWrite(BOARD_LORA_EN, HIGH);
-    digitalWrite(BOARD_GPS_EN, HIGH);
-    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
 
-    /* Auto-connect WiFi if credentials defined */
-#if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.printf("[WiFi] Connecting to %s...\n", WIFI_SSID);
-#endif
+    /* Radios stay off until an app asks for them (power_mgr.h). Leaving WiFi
+     * associated and the GPS/LoRa/modem rails up was costing most of the
+     * battery, since the device spends nearly all its time showing a static
+     * page on a panel that needs no power to hold an image. */
     configTzTime("PST8PDT,M3.2.0,M11.1.0", "pool.ntp.org");
+    power_mgr_init();
+
+    boot_time_sync();
+    lowpower_init();
+    power_log_state("boot done");
 }
 
 
@@ -702,6 +804,7 @@ uint32_t tick = 0;
 
 void loop()
 {
+    epd_typing_throttle();
     lv_task_handler();
     keypad_loop();
     extern void calc_keyboard_poll();
@@ -725,11 +828,15 @@ void loop()
     extern void notes_keyboard_poll();
     notes_keyboard_poll();
     file_server_loop();
+    power_mgr_tick();      /* expire warm-linger windows (GPS) */
+    lowpower_poll();
     bq25896_runtime_maintain();
 
     audio.loop();
 
-    delay(1);
+    /* Idle longer when throttled — the keypad is still polled every pass, so
+     * this only costs a few ms of key latency. */
+    delay(lowpower_is_idle() ? 20 : 1);
 
 
     if(millis() - tick > 3000) {

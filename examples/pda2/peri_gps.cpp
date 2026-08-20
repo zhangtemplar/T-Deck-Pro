@@ -19,8 +19,15 @@ static uint32_t gps_vsat=0;
 
 uint8_t buffer[256];
 
-bool gps_init(void)
-{   
+/* Negotiate the UART link and put the receiver into a known configuration.
+ *
+ * This has to run every time the module's supply is switched on, not just at
+ * boot: a power cycle returns the receiver to its power-up defaults, so the
+ * baud rate it talks at and the UBX settings applied here are both lost. Skip
+ * it and the parser task sees nothing usable and the app reports no satellites
+ * indefinitely — which looks exactly like a very slow fix. */
+static bool gps_link_setup(void)
+{
     bool result = false;
     // L76K GPS USE 9600 BAUDRATE
     // result = setupGPS();
@@ -38,11 +45,26 @@ bool gps_init(void)
             SerialGPS.updateBaudRate(38400);
         }
     }
+    return result;
+}
+
+bool gps_init(void)
+{   
+    bool result = gps_link_setup();
     if(result) {
         Serial.println("GPS Task Create...!");
         gps_task_create();
     }
     return result;
+}
+
+/* Re-run the link setup after the receiver has been power cycled. The parser
+ * task already exists, so this only redoes the negotiation. */
+bool gps_reinit(void)
+{
+    bool ok = gps_link_setup();
+    Serial.printf("[GPS] re-init after power-on: %s\n", ok ? "ok" : "FAILED");
+    return ok;
 }
 
 void gps_task(void *param)

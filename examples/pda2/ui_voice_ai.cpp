@@ -7,6 +7,7 @@
 #include "Arduino.h"
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
+#include "power_mgr.h"
 #include "gemini_api.h"
 #include "pdm_recorder.h"
 #include "config_keys.h"
@@ -392,6 +393,9 @@ static void ai_create(lv_obj_t *parent)
 
     /* Input at bottom */
     input_ta = lv_textarea_create(cont);
+    /* No cursor blink: each blink is a full e-ink refresh, so a focused
+     * field would repaint the panel twice a second forever. */
+    lv_obj_set_style_anim_time(input_ta, 0, LV_PART_CURSOR);
     lv_obj_set_width(input_ta, lv_pct(100));
     lv_obj_set_height(input_ta, 36);
     lv_textarea_set_placeholder_text(input_ta, "Ask anything...");
@@ -404,8 +408,8 @@ static void ai_create(lv_obj_t *parent)
     ai_kbd_active = true;
 }
 
-static void ai_entry(void) { ui_disp_full_refr(); }
-static void ai_exit(void) { ui_disp_full_refr(); }
+static void ai_entry(void) { power_acquire(PWR_WIFI); ui_disp_full_refr(); }
+static void ai_exit(void) { power_release(PWR_WIFI); ui_disp_full_refr(); }
 static void ai_destroy(void)
 {
     ai_kbd_active = false;

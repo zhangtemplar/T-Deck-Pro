@@ -6,6 +6,7 @@
 #include "Arduino.h"
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
+#include "power_mgr.h"
 #include "http_utils.h"
 #include "config_keys.h"
 #include <cJSON.h>
@@ -572,8 +573,20 @@ static void weather_create(lv_obj_t *parent)
     weather_kbd_active = true;
 }
 
-static void weather_entry(void) { ui_disp_full_refr(); }
-static void weather_exit(void) { ui_disp_full_refr(); }
+static void weather_entry(void)
+{
+    /* Needs the network for the forecast and GPS to know where we are; the
+     * last fix is cached in Preferences so a slow lock still shows something. */
+    power_acquire(PWR_WIFI);
+    power_acquire(PWR_GPS);
+    ui_disp_full_refr();
+}
+static void weather_exit(void)
+{
+    power_release(PWR_GPS);
+    power_release(PWR_WIFI);
+    ui_disp_full_refr();
+}
 static void weather_destroy(void)
 {
     weather_cleanup();

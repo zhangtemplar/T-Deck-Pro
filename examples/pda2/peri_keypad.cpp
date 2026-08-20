@@ -92,27 +92,52 @@ bool keypad_init(int address)
     return true;
 }
 
+/* ---- key buffer ----
+ * The e-ink flush blocks for a few hundred milliseconds inside
+ * lv_task_handler(), so keypad_loop() cannot run at all while the panel
+ * updates. The TCA8418's own FIFO only holds ten events (five keystrokes,
+ * since press and release both count), so anything typed faster than the
+ * refresh rate used to be dropped. Drain the chip into this ring instead and
+ * let callers consume at their own pace. */
+#define KEY_RING_SIZE 32
+static char     key_ring[KEY_RING_SIZE];
+static uint8_t  key_head = 0, key_tail = 0;
+static uint32_t key_last_ms = 0;
+
+static inline bool key_ring_empty(void) { return key_head == key_tail; }
+
+static void key_ring_push(char c)
+{
+    uint8_t next = (uint8_t)((key_tail + 1) % KEY_RING_SIZE);
+    if (next == key_head) return;          /* full: drop the newest */
+    key_ring[key_tail] = c;
+    key_tail = next;
+}
+
 int keypad_get_val(char *c)
 {
-    if(c){
-        *c = keypad_curr_val;
-    }
-    return keypad_update;
-} 
+    if (key_ring_empty()) return 0;
+    if (c) *c = key_ring[key_head];
+    return 1;
+}
 
 void keypad_set_flag(void)
 {
-    keypad_update = false;
+    if (key_ring_empty()) return;
+    key_head = (uint8_t)((key_head + 1) % KEY_RING_SIZE);
 }
 
-void keypad_loop(void)
+uint32_t keypad_last_activity_ms(void)
+{
+    return key_last_ms;
+}
+
+/* Handle one raw event from the controller. */
+static void keypad_handle_event(int k)
 {
     char c = 0;
     int state = -1;
     int row, col;
-    int k = keypad.getEvent();
-
-    if (k == 0) return;
 
     if (k >= KEYPAD_RELEASE_VAL_MIN && k <= KEYPAD_RELEASE_VAL_MAX) {
         k = k - KEYPAD_RELEASE_VAL_MIN;
@@ -193,6 +218,21 @@ void keypad_loop(void)
         keypad_curr_val = c;
         keypad_state = state;
         keypad_update = true;
+        key_ring_push(c);
+    }
+}
+
+void keypad_loop(void)
+{
+    /* Drain the controller's FIFO rather than taking one event per call: the
+     * panel refresh keeps this function from running for a few hundred ms at a
+     * time, so several keystrokes are usually waiting. Bounded so a stuck key
+     * can't spin here forever. */
+    for (int n = 0; n < 24; n++) {
+        int k = keypad.getEvent();
+        if (k == 0) break;
+        key_last_ms = millis();
+        keypad_handle_event(k);
     }
 }
 

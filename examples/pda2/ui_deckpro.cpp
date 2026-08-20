@@ -1,5 +1,6 @@
 
 #include "ui_deckpro.h"
+#include "power_mgr.h"
 #include "src/assets.h"
 #include "stdio.h"
 #include "ui_deckpro_port.h"
@@ -624,9 +625,11 @@ static void create1(lv_obj_t *parent)
 
 static void entry1(void) 
 {
+    power_acquire(PWR_LORA);       /* radio only powered while the app is open */
     ui_disp_full_refr();
 }
 static void exit1(void) {
+    power_release(PWR_LORA);
     ui_disp_full_refr();
 }
 static void destroy1(void) { }
@@ -1372,13 +1375,13 @@ static void entry3(void)
 {
     scr3_GPS_updata();
 
-    ui_gps_task_resume();
+    power_acquire(PWR_GPS);
 
     GPS_loop_timer = lv_timer_create(GPS_loop_timer_event, 3000, NULL);
     ui_disp_full_refr();
 }
 static void exit3(void) {
-    ui_gps_task_suspend();
+    power_release(PWR_GPS);
     if(GPS_loop_timer) {
         lv_timer_del(GPS_loop_timer);
         GPS_loop_timer = NULL;
@@ -1480,9 +1483,11 @@ static void create4(lv_obj_t *parent)
 
 static void entry4(void) 
 {
+    power_acquire(PWR_WIFI);   /* the WiFi screens need the radio up */
     ui_disp_full_refr();
 }
 static void exit4(void) {
+    power_release(PWR_WIFI);
     ui_disp_full_refr();
 }
 static void destroy4(void) { }
@@ -1513,9 +1518,11 @@ static void create4_1(lv_obj_t *parent)
 
 static void entry4_1(void) 
 {
+    power_acquire(PWR_WIFI);   /* the WiFi screens need the radio up */
     ui_disp_full_refr();
 }
 static void exit4_1(void) {
+    power_release(PWR_WIFI);
     ui_disp_full_refr();
 }
 static void destroy4_1(void) { }
@@ -1602,11 +1609,13 @@ static void create4_2(lv_obj_t *parent)
 }
 static void entry4_2(void) 
 {
+    power_acquire(PWR_WIFI);   /* the WiFi screens need the radio up */
     ui_disp_full_refr();
     wifi_scan_timer = lv_timer_create(wifi_scan_timer_event, 10000, NULL);
     lv_timer_ready(wifi_scan_timer);
 }
 static void exit4_2(void) {
+    power_release(PWR_WIFI);
     ui_disp_full_refr();
     if(wifi_scan_timer) {
         lv_timer_del(wifi_scan_timer);
@@ -2454,9 +2463,11 @@ static void create8(lv_obj_t *parent)
 }
 static void entry8(void) 
 {
+    power_acquire(PWR_MODEM);      /* A7682E LDO + power-on pulse */
     ui_disp_full_refr();
 }
 static void exit8(void) {
+    power_release(PWR_MODEM);
     ui_disp_full_refr();
 }
 static void destroy8(void) { }
@@ -2513,6 +2524,7 @@ static void scr8_1_btn_event_cb(lv_event_t * e)
 static void create8_1(lv_obj_t *parent) 
 {
     lv_obj_t * ta = lv_textarea_create(parent);
+    lv_obj_set_style_anim_time(ta, 0, LV_PART_CURSOR);  /* see note in ui_notes.cpp */
     lv_textarea_set_one_line(ta, true);
     lv_obj_set_width(ta, lv_pct(98));
     lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, lv_pct(20));

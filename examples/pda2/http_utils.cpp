@@ -7,6 +7,7 @@
  * @brief     Shared HTTPS request utilities implementation.
  */
 #include "http_utils.h"
+#include "power_mgr.h"
 
 #ifdef ARDUINO
 #include <WiFi.h>
@@ -17,7 +18,21 @@
 
 bool http_require_wifi(const char *feature_name)
 {
-    return WiFi.status() == WL_CONNECTED;
+    if (WiFi.status() == WL_CONNECTED) return true;
+
+    /* Radios are powered on demand now (power_mgr.h): the screen using this
+     * feature brings the rail up in its entry(), but association takes a few
+     * seconds, so wait for it rather than failing the first request. */
+    if (!power_is_on(PWR_WIFI)) {
+        Serial.printf("[HTTP] %s: WiFi rail is not powered\n",
+                      feature_name ? feature_name : "feature");
+        return false;
+    }
+    bool ok = power_wifi_wait(10000);
+    if (!ok)
+        Serial.printf("[HTTP] %s: WiFi did not associate\n",
+                      feature_name ? feature_name : "feature");
+    return ok;
 }
 
 http_response_t http_get(const char *url, uint32_t timeout_ms)

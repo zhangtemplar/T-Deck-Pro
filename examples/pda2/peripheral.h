@@ -44,8 +44,15 @@ void lora_param_set(void);
 typedef void (*keypad_cb)(int state, char val);
 
 bool keypad_init(int address);
+/* Peek the oldest buffered key without consuming it; returns 0 when none.
+ * Pair with keypad_set_flag() to consume, which is what every caller does:
+ *     while (keypad_get_val(&c)) { keypad_set_flag(); ...handle c... }
+ * Looping like this drains a whole burst before the next screen refresh. */
 int keypad_get_val(char *c);
 void keypad_loop(void);
+
+/* millis() of the last key event, for coalescing e-ink refreshes while typing. */
+uint32_t keypad_last_activity_ms(void);
 void keypad_regetser_cb(keypad_cb cb);
 void keypad_set_flag(void);
 
@@ -56,6 +63,8 @@ void BHI260AP_get_val(int val_type, float *x, float *y, float *z);
 // gps u-blox m10q
 bool gps_init(void);
 void gps_task_create(void);
+/* Re-negotiate the link after the module's supply has been switched back on. */
+bool gps_reinit(void);
 void gps_task_suspend(void);
 void gps_task_resume(void);
 void gps_get_coord(double *lat, double *lng);

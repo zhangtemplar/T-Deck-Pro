@@ -8,6 +8,7 @@
 #include "Arduino.h"
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
+#include "power_mgr.h"
 #include "utilities.h"          /* BOARD_SD_CS */
 #include <SD.h>
 #include <vector>
@@ -649,15 +650,19 @@ static void gps_create(lv_obj_t *parent)
     lv_obj_center(dl);
 
     show_gps_page(0);
-    ui_gps_task_resume();
     gps_timer = lv_timer_create(gps_update_cb, 3000, NULL);
     gps_kbd_active = true;
 }
 
-static void gps_entry(void) { ui_disp_full_refr(); }
+static void gps_entry(void)
+{
+    /* Receiver LDO + NMEA task; both drop again on exit. */
+    power_acquire(PWR_GPS);
+    ui_disp_full_refr();
+}
 static void gps_exit(void)
 {
-    ui_gps_task_suspend();
+    power_release(PWR_GPS);
     if (gps_timer) { lv_timer_del(gps_timer); gps_timer = NULL; }
     ui_disp_full_refr();
 }
