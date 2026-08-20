@@ -7,6 +7,8 @@
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
 #include "power_mgr.h"
+#include "city_db.h"
+#include "cjk_font.h"
 #include "http_utils.h"
 #include "config_keys.h"
 #include <cJSON.h>
@@ -73,6 +75,14 @@ static lv_obj_t *status_label = NULL;
 static lv_obj_t *icon_img = NULL;
 static lv_obj_t *hourly_table = NULL;
 static lv_obj_t *daily_table = NULL;
+
+/* City picker: an overlay rather than a fourth page, so the existing 3-page
+ * cycle is untouched. Empty city_choice means "follow GPS". */
+static lv_obj_t *city_ovl = NULL;
+static lv_obj_t *city_search_ta = NULL;
+static lv_obj_t *city_result_list = NULL;
+static lv_obj_t *city_btn_lbl = NULL;
+static bool city_picker_open = false;
 static bool weather_active = false;
 
 static const lv_img_dsc_t *weather_icon_img(const char *ic)
@@ -267,11 +277,61 @@ static void fetch_city_name(float lat, float lon)
 #endif
 }
 
+/* The city the user picked, if any. Stored by name plus coordinates so a
+ * fetch needs no lookup and the label is right even before the first reply. */
+static bool weather_get_choice(char *name, int cap, float *lat, float *lon)
+{
+    Preferences p;
+    p.begin("weather", true);
+    String n = p.getString("city", "");
+    float la = p.getFloat("clat", 0), lo = p.getFloat("clon", 0);
+    p.end();
+    if (n.length() == 0) return false;
+    snprintf(name, cap, "%s", n.c_str());
+    if (lat) *lat = la;
+    if (lon) *lon = lo;
+    return true;
+}
+
+static void weather_set_choice(const city_t *c)
+{
+    Preferences p;
+    p.begin("weather", false);
+    if (c) {
+        p.putString("city", c->city);
+        p.putFloat("clat", city_lat(c));
+        p.putFloat("clon", city_lon(c));
+    } else {
+        p.putString("city", "");        /* back to following GPS */
+    }
+    p.end();
+}
+
+static void close_city_picker(void);
+static void city_pick_cb(lv_event_t *e);
+static void start_fetch(void);
+/* The cache is keyed to nowhere in particular, so a new city has to drop it
+ * or start_fetch() would see fresh data and skip the request. */
+static void invalidate_cache(void)
+{
+    data_valid = false;
+    last_fetch_time = 0;
+}
+
+static void update_city_button(void);
+static void invalidate_cache(void);
+
 static void weather_fetch_task(void *param)
 {
 #ifdef OWM_API_KEY
     float lat = 37.49f, lon = -122.27f;
     const char *loc_source = "fallback";
+
+    /* A city the user picked outranks any GPS fix — it is an explicit choice,
+     * and it also means the forecast doesn't move when you do. */
+    char chosen[48];
+    float clat, clon;
+    bool have_choice = weather_get_choice(chosen, sizeof(chosen), &clat, &clon);
 
     /* Try cached GPS coords */
     Preferences prefs;
@@ -293,6 +353,12 @@ static void weather_fetch_task(void *param)
         Preferences p; p.begin("weather", false);
         p.putFloat("gps_lat", lat); p.putFloat("gps_lon", lon);
         p.end();
+    }
+
+    if (have_choice) {
+        lat = clat; lon = clon;
+        loc_source = "chosen city";
+        snprintf(location_name, sizeof(location_name), "%s", chosen);
     }
 
     Serial.printf("[Weather] Using %s: lat=%.4f lon=%.4f\n", loc_source, lat, lon);
@@ -379,10 +445,8 @@ static void update_ui()
             snprintf(buf, sizeof(buf), "%.0f/%.0f", daily[i].temp_min, daily[i].temp_max);
             lv_table_set_cell_value(daily_table, r, 1, buf);
             lv_table_set_cell_value(daily_table, r, 2, daily[i].desc);
-            snprintf(buf, sizeof(buf), "%d%%", daily[i].humidity);
-            lv_table_set_cell_value(daily_table, r, 3, buf);
             snprintf(buf, sizeof(buf), "%d%%", daily[i].pop_pct);
-            lv_table_set_cell_value(daily_table, r, 4, buf);
+            lv_table_set_cell_value(daily_table, r, 3, buf);
         }
     }
 }
@@ -393,6 +457,53 @@ static void refresh_cb(lv_timer_t *t)
 }
 
 // --- Pagination ---
+
+
+/* ---- city picker overlay ---- */
+
+static void refresh_city_results(void)
+{
+    if (!city_result_list) return;
+    lv_obj_clean(city_result_list);
+
+    /* Always offer the way back to automatic. */
+    lv_obj_t *g = lv_list_add_btn(city_result_list, LV_SYMBOL_GPS, "Use GPS location");
+    lv_obj_add_event_cb(g, [](lv_event_t *e) {
+        weather_set_choice(NULL);
+        location_name[0] = '\0';
+        invalidate_cache();
+        close_city_picker();
+        start_fetch();
+    }, LV_EVENT_CLICKED, NULL);
+
+    const char *q = city_search_ta ? lv_textarea_get_text(city_search_ta) : "";
+    if (!q || !q[0]) return;
+
+    const city_t *hits[24];
+    int n = city_search_prefix(q, hits, 24);
+    for (int i = 0; i < n; i++) {
+        char label[72];
+        snprintf(label, sizeof(label), "%s, %s", hits[i]->city, hits[i]->country);
+        lv_obj_t *b = lv_list_add_btn(city_result_list, NULL, label);
+        lv_obj_set_style_text_font(b, &g_font_cn, LV_PART_MAIN);
+        lv_obj_add_event_cb(b, city_pick_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)(hits[i] - city_table));
+    }
+    if (n == 0) {
+        lv_obj_t *b = lv_list_add_btn(city_result_list, NULL, "No match");
+        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    }
+}
+
+static void open_city_picker(lv_event_t *e)
+{
+    if (!city_ovl) return;
+    city_picker_open = true;
+    lv_textarea_set_text(city_search_ta, "");
+    refresh_city_results();
+    lv_obj_clear_flag(city_ovl, LV_OBJ_FLAG_HIDDEN);
+    ui_disp_full_refr();
+}
 
 #define WEATHER_PAGE_COUNT 3
 static int weather_page = 0;
@@ -425,12 +536,57 @@ static void show_page(int idx)
 
 // --- Keyboard ---
 
+static void close_city_picker(void)
+{
+    city_picker_open = false;
+    if (city_ovl) lv_obj_add_flag(city_ovl, LV_OBJ_FLAG_HIDDEN);
+    update_city_button();
+    ui_disp_full_refr();
+}
+
+static void city_pick_cb(lv_event_t *e)
+{
+    intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= city_count) return;
+    const city_t *c = &city_table[idx];
+    weather_set_choice(c);
+    snprintf(location_name, sizeof(location_name), "%s", c->city);
+    if (city_label) lv_label_set_text(city_label, location_name);
+    invalidate_cache();
+    close_city_picker();
+    start_fetch();          /* refetch for the new coordinates */
+}
+
+static void update_city_button(void)
+{
+    if (!city_btn_lbl) return;
+    char name[48];
+    bool manual = weather_get_choice(name, sizeof(name), NULL, NULL);
+    lv_label_set_text(city_btn_lbl, manual ? LV_SYMBOL_EDIT " change"
+                                           : LV_SYMBOL_GPS " auto");
+}
+
 void weather_keyboard_poll()
 {
     if (!weather_kbd_active) return;
     char c;
     if (!keypad_get_val(&c)) return;
     keypad_set_flag();
+
+    if (city_picker_open) {
+        if (c == '\n') {
+            close_city_picker();
+        } else if (c == '\b') {
+            const char *t = lv_textarea_get_text(city_search_ta);
+            if (!t || !t[0]) close_city_picker();
+            else { lv_textarea_del_char(city_search_ta); refresh_city_results(); ui_disp_full_refr(); }
+        } else if (c >= ' ') {
+            lv_textarea_add_char(city_search_ta, c);
+            refresh_city_results();          /* typeahead */
+            ui_disp_full_refr();
+        }
+        return;
+    }
 
     if (c == '\b') {
         if (weather_page > 0) {
@@ -497,9 +653,27 @@ static void weather_create(lv_obj_t *parent)
     lv_obj_t *p0 = make_page_container(parent);
     pages[0] = p0;
 
-    city_label = lv_label_create(p0);
+    /* The city name doubles as the picker button — one line of screen for two
+     * jobs, and tapping where the city is written is where you'd look. */
+    lv_obj_t *city_btn = lv_btn_create(p0);
+    lv_obj_set_size(city_btn, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(city_btn, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(city_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(city_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(city_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(city_btn, 6, LV_PART_MAIN);
+    lv_obj_set_flex_flow(city_btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(city_btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_add_event_cb(city_btn, open_city_picker, LV_EVENT_CLICKED, NULL);
+
+    city_label = lv_label_create(city_btn);
     lv_obj_set_style_text_font(city_label, &lv_font_montserrat_18, LV_PART_MAIN);
     lv_label_set_text(city_label, "Loading...");
+
+    city_btn_lbl = lv_label_create(city_btn);
+    lv_obj_set_style_text_font(city_btn_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(city_btn_lbl, lv_palette_main(LV_PALETTE_GREY), LV_PART_MAIN);
+    lv_label_set_text(city_btn_lbl, "");
 
     lv_obj_t *row = lv_obj_create(p0);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -549,21 +723,49 @@ static void weather_create(lv_obj_t *parent)
     lv_obj_t *p2 = make_page_container(parent);
     pages[2] = p2;
 
+    /* Four columns, not five: humidity added little to a daily view and its
+     * 32 px left every other column too narrow to read. The 232 px is now
+     * spread across the columns people actually scan. */
     daily_table = lv_table_create(p2);
-    lv_table_set_col_cnt(daily_table, 5);
-    lv_table_set_col_width(daily_table, 0, 32);
-    lv_table_set_col_width(daily_table, 1, 50);
-    lv_table_set_col_width(daily_table, 2, 64);
-    lv_table_set_col_width(daily_table, 3, 32);
-    lv_table_set_col_width(daily_table, 4, 32);
+    lv_table_set_col_cnt(daily_table, 4);
+    lv_table_set_col_width(daily_table, 0, 44);   /* Day    */
+    lv_table_set_col_width(daily_table, 1, 66);   /* Lo/Hi  */
+    lv_table_set_col_width(daily_table, 2, 76);   /* Wx     */
+    lv_table_set_col_width(daily_table, 3, 44);   /* Rain   */
     style_table(daily_table);
-    const char *dc[] = {"Day", "Lo/Hi", "Wx", "Hum", "Rain"};
+    const char *dc[] = {"Day", "Lo/Hi", "Wx", "Rain"};
     lv_table_set_row_cnt(daily_table, 1);
-    for (int j = 0; j < 5; j++) lv_table_set_cell_value(daily_table, 0, j, dc[j]);
+    for (int j = 0; j < 4; j++) lv_table_set_cell_value(daily_table, 0, j, dc[j]);
+
+    /* === City picker overlay ===
+     * Created last so it sits above the pages, and covers the whole app area
+     * so a stray tap can't land on the weather behind it. */
+    city_ovl = lv_obj_create(parent);
+    lv_obj_set_size(city_ovl, 240, 292);
+    lv_obj_align(city_ovl, LV_ALIGN_TOP_MID, 0, 28);
+    lv_obj_set_style_border_width(city_ovl, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(city_ovl, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(city_ovl, 4, LV_PART_MAIN);
+    lv_obj_set_flex_flow(city_ovl, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(city_ovl, 4, LV_PART_MAIN);
+    lv_obj_clear_flag(city_ovl, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(city_ovl, LV_OBJ_FLAG_HIDDEN);
+
+    city_search_ta = lv_textarea_create(city_ovl);
+    lv_obj_set_size(city_search_ta, lv_pct(100), 34);
+    lv_textarea_set_one_line(city_search_ta, true);
+    lv_textarea_set_placeholder_text(city_search_ta, "Type a city...");
+    /* No blinking cursor: on e-ink each blink is a full panel repaint. */
+    lv_obj_set_style_anim_time(city_search_ta, 0, LV_PART_CURSOR | LV_STATE_FOCUSED);
+
+    city_result_list = lv_list_create(city_ovl);
+    lv_obj_set_size(city_result_list, lv_pct(100), 240);
+    lv_obj_set_style_pad_all(city_result_list, 0, LV_PART_MAIN);
 
     /* Show page 0 */
     weather_page = 0;
     show_page(0);
+    update_city_button();
 
     load_cache();
     if (data_valid) update_ui();
@@ -592,6 +794,8 @@ static void weather_destroy(void)
     weather_cleanup();
     city_label = temp_label = detail_label = status_label = icon_img = NULL;
     hourly_table = daily_table = page_label = NULL;
+    city_ovl = city_search_ta = city_result_list = city_btn_lbl = NULL;
+    city_picker_open = false;
     for (int i = 0; i < WEATHER_PAGE_COUNT; i++) pages[i] = NULL;
 }
 
