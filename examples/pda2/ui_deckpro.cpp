@@ -283,6 +283,7 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN_IMAGE_ID,        &img_image,      "Images"},
     {SCREEN_READER_ID,       &img_book,       "Reader"},
     {SCREEN_NOTES_ID,        &img_notes,      "Notes"},
+    {SCREEN_WORLDCLOCK_ID,   &img_worldclock, "Clocks"},
 
     /* Hardware / diagnostics */
     {SCREEN1_ID,             &img_lora,       "Lora"},
@@ -3223,6 +3224,9 @@ void ui_deckpro_entry(void)
 
     extern scr_lifecycle_t screen_notes;
     scr_mgr_register(SCREEN_NOTES_ID, &screen_notes);
+
+    extern scr_lifecycle_t screen_worldclock;
+    scr_mgr_register(SCREEN_WORLDCLOCK_ID, &screen_worldclock);
 
     scr_mgr_switch(SCREEN0_ID, false); // set root screen
     scr_mgr_set_anim(LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT, LV_SCR_LOAD_ANIM_OVER_LEFT);

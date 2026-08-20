@@ -81,6 +81,7 @@ enum {
     SCREEN_IMAGE_ID,
     SCREEN_READER_ID,
     SCREEN_NOTES_ID,
+    SCREEN_WORLDCLOCK_ID,
 };
 
 typedef void (*ui_indev_read_cb)(int);

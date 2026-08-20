@@ -832,6 +832,10 @@ void loop()
     reader_keyboard_poll();
     extern void notes_keyboard_poll();
     notes_keyboard_poll();
+    extern void worldclock_keyboard_poll();
+    worldclock_keyboard_poll();
+    extern void worldclock_tick();
+    worldclock_tick();
     file_server_loop();
     power_mgr_tick();      /* expire warm-linger windows (GPS) */
     lowpower_poll();

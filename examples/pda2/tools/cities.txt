@@ -1,0 +1,241 @@
+# Shared city database source.  Fields: city|country|lat|lon|posix_tz
+# Pipe-delimited because POSIX TZ strings contain commas.
+# lat/lon are decimal degrees (north/east positive).
+# Regenerate the C table with:  python3 tools/gen_city_db.py
+# Write zones in conventional form (standard first, DST second). Ireland's
+# legal 'IST-1GMT0' negative-DST spelling is behaviourally identical to
+# 'GMT0IST' but reports +1 as standard, which mis-sorts it away from London.
+# Accuracy: entries below carry whole-degree coordinates inherited from the
+# original world-clock table (about +/-55 km).  Feed the generator a GeoNames
+# extract (--geonames) for precise coordinates and far more cities.
+Pago Pago|American Samoa|-14|-170|SST11
+Honolulu|USA|21|-158|HST10
+Anchorage|USA|61|-150|AKST9AKDT,M3.2.0,M11.1.0
+Los Angeles|USA|34|-118|PST8PDT,M3.2.0,M11.1.0
+San Francisco|USA|38|-122|PST8PDT,M3.2.0,M11.1.0
+Seattle|USA|48|-122|PST8PDT,M3.2.0,M11.1.0
+Vancouver|Canada|49|-123|PST8PDT,M3.2.0,M11.1.0
+Tijuana|Mexico|32|-117|PST8PDT,M3.2.0,M11.1.0
+Denver|USA|39|-105|MST7MDT,M3.2.0,M11.1.0
+Phoenix|USA|33|-112|MST7
+Calgary|Canada|51|-114|MST7MDT,M3.2.0,M11.1.0
+Chicago|USA|41|-87|CST6CDT,M3.2.0,M11.1.0
+Dallas|USA|32|-96|CST6CDT,M3.2.0,M11.1.0
+Houston|USA|29|-95|CST6CDT,M3.2.0,M11.1.0
+Mexico City|Mexico|19|-99|CST6
+Guatemala|Guatemala|14|-90|CST6
+Winnipeg|Canada|49|-97|CST6CDT,M3.2.0,M11.1.0
+New York|USA|40|-74|EST5EDT,M3.2.0,M11.1.0
+Washington|USA|38|-77|EST5EDT,M3.2.0,M11.1.0
+Boston|USA|42|-71|EST5EDT,M3.2.0,M11.1.0
+Miami|USA|25|-80|EST5EDT,M3.2.0,M11.1.0
+Atlanta|USA|33|-84|EST5EDT,M3.2.0,M11.1.0
+Toronto|Canada|43|-79|EST5EDT,M3.2.0,M11.1.0
+Montreal|Canada|45|-73|EST5EDT,M3.2.0,M11.1.0
+Havana|Cuba|23|-82|CST5CDT,M3.2.0/0,M11.1.0/1
+Bogota|Colombia|4|-74|<-05>5
+Lima|Peru|-12|-77|<-05>5
+Panama|Panama|9|-79|EST5
+Caracas|Venezuela|10|-67|<-04>4
+Santiago|Chile|-33|-71|<-04>4<-03>,M9.1.6/24,M4.1.6/24
+La Paz|Bolivia|-16|-68|<-04>4
+Halifax|Canada|45|-63|AST4ADT,M3.2.0,M11.1.0
+Buenos Aires|Argentina|-35|-58|<-03>3
+Sao Paulo|Brazil|-24|-47|<-03>3
+Rio de Janeiro|Brazil|-23|-43|<-03>3
+Montevideo|Uruguay|-35|-56|<-03>3
+Praia|Cape Verde|15|-24|<-01>1
+Reykjavik|Iceland|64|-22|GMT0
+London|UK|52|0|GMT0BST,M3.5.0/1,M10.5.0
+Dublin|Ireland|53.35|-6.26|GMT0IST,M3.5.0/1,M10.5.0
+Lisbon|Portugal|39|-9|WET0WEST,M3.5.0/1,M10.5.0
+Casablanca|Morocco|34|-8|<+01>-1
+Accra|Ghana|6|0|GMT0
+Dakar|Senegal|15|-17|GMT0
+Paris|France|49|2|CET-1CEST,M3.5.0,M10.5.0/3
+Berlin|Germany|53|13|CET-1CEST,M3.5.0,M10.5.0/3
+Madrid|Spain|40|-4|CET-1CEST,M3.5.0,M10.5.0/3
+Rome|Italy|42|12|CET-1CEST,M3.5.0,M10.5.0/3
+Amsterdam|Netherlands|52|5|CET-1CEST,M3.5.0,M10.5.0/3
+Brussels|Belgium|51|4|CET-1CEST,M3.5.0,M10.5.0/3
+Zurich|Switzerland|47|8|CET-1CEST,M3.5.0,M10.5.0/3
+Vienna|Austria|48|16|CET-1CEST,M3.5.0,M10.5.0/3
+Prague|Czechia|50|14|CET-1CEST,M3.5.0,M10.5.0/3
+Warsaw|Poland|52|21|CET-1CEST,M3.5.0,M10.5.0/3
+Stockholm|Sweden|59|18|CET-1CEST,M3.5.0,M10.5.0/3
+Oslo|Norway|60|11|CET-1CEST,M3.5.0,M10.5.0/3
+Copenhagen|Denmark|56|13|CET-1CEST,M3.5.0,M10.5.0/3
+Budapest|Hungary|47|19|CET-1CEST,M3.5.0,M10.5.0/3
+Lagos|Nigeria|6|3|WAT-1
+Algiers|Algeria|37|3|CET-1
+Athens|Greece|38|24|EET-2EEST,M3.5.0/3,M10.5.0/4
+Helsinki|Finland|60|25|EET-2EEST,M3.5.0/3,M10.5.0/4
+Kyiv|Ukraine|50|31|EET-2EEST,M3.5.0/3,M10.5.0/4
+Bucharest|Romania|44|26|EET-2EEST,M3.5.0/3,M10.5.0/4
+Cairo|Egypt|30|31|EET-2EEST,M4.5.5/0,M10.5.4/24
+Johannesburg|South Africa|-26|28|SAST-2
+Cape Town|South Africa|-34|18|SAST-2
+Jerusalem|Israel|32|35|IST-2IDT,M3.4.4/26,M10.5.0
+Moscow|Russia|56|38|MSK-3
+Istanbul|Turkey|41|29|<+03>-3
+Riyadh|Saudi Arabia|25|47|<+03>-3
+Nairobi|Kenya|-1|37|EAT-3
+Addis Ababa|Ethiopia|9|39|EAT-3
+Baghdad|Iraq|33|44|<+03>-3
+Dubai|UAE|25|55|<+04>-4
+Baku|Azerbaijan|40|50|<+04>-4
+Tbilisi|Georgia|42|45|<+04>-4
+Karachi|Pakistan|25|67|PKT-5
+Tashkent|Uzbekistan|41|69|<+05>-5
+Mumbai|India|19|73|IST-5:30
+Delhi|India|29|77|IST-5:30
+Bengaluru|India|13|78|IST-5:30
+Kolkata|India|23|88|IST-5:30
+Colombo|Sri Lanka|7|80|<+0530>-5:30
+Kathmandu|Nepal|28|85|<+0545>-5:45
+Dhaka|Bangladesh|24|90|<+06>-6
+Almaty|Kazakhstan|43|77|<+05>-5
+Bangkok|Thailand|14|100|<+07>-7
+Jakarta|Indonesia|-6|107|WIB-7
+Hanoi|Vietnam|21|106|<+07>-7
+Beijing|China|40|116|CST-8
+Shanghai|China|31|121|CST-8
+Shenzhen|China|23|114|CST-8
+Hong Kong|China|22|114|HKT-8
+Taipei|Taiwan|25|122|CST-8
+Singapore|Singapore|1|104|<+08>-8
+Kuala Lumpur|Malaysia|3|102|<+08>-8
+Manila|Philippines|15|121|PST-8
+Perth|Australia|-32|116|AWST-8
+Tokyo|Japan|36|140|JST-9
+Osaka|Japan|35|136|JST-9
+Seoul|South Korea|38|127|KST-9
+Pyongyang|North Korea|39|126|KST-9
+Adelaide|Australia|-35|139|ACST-9:30ACDT,M10.1.0,M4.1.0/3
+Brisbane|Australia|-27|153|AEST-10
+Sydney|Australia|-34|151|AEST-10AEDT,M10.1.0,M4.1.0/3
+Melbourne|Australia|-38|145|AEST-10AEDT,M10.1.0,M4.1.0/3
+Canberra|Australia|-35|149|AEST-10AEDT,M10.1.0,M4.1.0/3
+Port Moresby|PNG|-9|147|<+10>-10
+Vladivostok|Russia|43|132|<+10>-10
+Noumea|New Caledonia|-22|166|<+11>-11
+Auckland|New Zealand|-37|175|NZST-12NZDT,M9.5.0,M4.1.0/3
+Wellington|New Zealand|-41|175|NZST-12NZDT,M9.5.0,M4.1.0/3
+Suva|Fiji|-18|178|<+12>-12
+Apia|Samoa|-14|-172|<+13>-13
+Kiritimati|Kiribati|2|-157|<+14>-14
+# --- expansion: denser coverage for the weather app -------------------------
+# Coordinates below are to 0.01 deg where known.
+San Diego|USA|32.72|-117.16|PST8PDT,M3.2.0,M11.1.0
+Portland|USA|45.52|-122.68|PST8PDT,M3.2.0,M11.1.0
+Sacramento|USA|38.58|-121.49|PST8PDT,M3.2.0,M11.1.0
+San Jose|USA|37.34|-121.89|PST8PDT,M3.2.0,M11.1.0
+Las Vegas|USA|36.17|-115.14|PST8PDT,M3.2.0,M11.1.0
+Salt Lake City|USA|40.76|-111.89|MST7MDT,M3.2.0,M11.1.0
+Albuquerque|USA|35.08|-106.65|MST7MDT,M3.2.0,M11.1.0
+Minneapolis|USA|44.98|-93.27|CST6CDT,M3.2.0,M11.1.0
+Kansas City|USA|39.10|-94.58|CST6CDT,M3.2.0,M11.1.0
+St Louis|USA|38.63|-90.20|CST6CDT,M3.2.0,M11.1.0
+New Orleans|USA|29.95|-90.07|CST6CDT,M3.2.0,M11.1.0
+San Antonio|USA|29.42|-98.49|CST6CDT,M3.2.0,M11.1.0
+Austin|USA|30.27|-97.74|CST6CDT,M3.2.0,M11.1.0
+Nashville|USA|36.16|-86.78|CST6CDT,M3.2.0,M11.1.0
+Detroit|USA|42.33|-83.05|EST5EDT,M3.2.0,M11.1.0
+Philadelphia|USA|39.95|-75.17|EST5EDT,M3.2.0,M11.1.0
+Pittsburgh|USA|40.44|-79.996|EST5EDT,M3.2.0,M11.1.0
+Charlotte|USA|35.23|-80.84|EST5EDT,M3.2.0,M11.1.0
+Orlando|USA|28.54|-81.38|EST5EDT,M3.2.0,M11.1.0
+Ottawa|Canada|45.42|-75.70|EST5EDT,M3.2.0,M11.1.0
+Quebec City|Canada|46.81|-71.21|EST5EDT,M3.2.0,M11.1.0
+Edmonton|Canada|53.55|-113.49|MST7MDT,M3.2.0,M11.1.0
+Monterrey|Mexico|25.69|-100.32|CST6
+Guadalajara|Mexico|20.67|-103.35|CST6
+San Jose CR|Costa Rica|9.93|-84.08|CST6
+Santo Domingo|Dominican Republic|18.49|-69.93|AST4
+San Juan|Puerto Rico|18.47|-66.11|AST4
+Quito|Ecuador|-0.18|-78.47|<-05>5
+Brasilia|Brazil|-15.79|-47.88|<-03>3
+Salvador|Brazil|-12.97|-38.50|<-03>3
+Recife|Brazil|-8.05|-34.88|<-03>3
+Porto Alegre|Brazil|-30.03|-51.23|<-03>3
+Asuncion|Paraguay|-25.28|-57.64|<-03>3
+Cordoba|Argentina|-31.42|-64.18|<-03>3
+Edinburgh|UK|55.95|-3.19|GMT0BST,M3.5.0/1,M10.5.0
+Manchester|UK|53.48|-2.24|GMT0BST,M3.5.0/1,M10.5.0
+Birmingham|UK|52.49|-1.89|GMT0BST,M3.5.0/1,M10.5.0
+Glasgow|UK|55.86|-4.25|GMT0BST,M3.5.0/1,M10.5.0
+Porto|Portugal|41.15|-8.61|WET0WEST,M3.5.0/1,M10.5.0
+Barcelona|Spain|41.39|2.17|CET-1CEST,M3.5.0,M10.5.0/3
+Valencia|Spain|39.47|-0.38|CET-1CEST,M3.5.0,M10.5.0/3
+Seville|Spain|37.39|-5.98|CET-1CEST,M3.5.0,M10.5.0/3
+Lyon|France|45.76|4.84|CET-1CEST,M3.5.0,M10.5.0/3
+Marseille|France|43.30|5.37|CET-1CEST,M3.5.0,M10.5.0/3
+Toulouse|France|43.60|1.44|CET-1CEST,M3.5.0,M10.5.0/3
+Nice|France|43.70|7.27|CET-1CEST,M3.5.0,M10.5.0/3
+Munich|Germany|48.14|11.58|CET-1CEST,M3.5.0,M10.5.0/3
+Hamburg|Germany|53.55|9.99|CET-1CEST,M3.5.0,M10.5.0/3
+Frankfurt|Germany|50.11|8.68|CET-1CEST,M3.5.0,M10.5.0/3
+Cologne|Germany|50.94|6.96|CET-1CEST,M3.5.0,M10.5.0/3
+Stuttgart|Germany|48.78|9.18|CET-1CEST,M3.5.0,M10.5.0/3
+Milan|Italy|45.46|9.19|CET-1CEST,M3.5.0,M10.5.0/3
+Naples|Italy|40.85|14.27|CET-1CEST,M3.5.0,M10.5.0/3
+Turin|Italy|45.07|7.69|CET-1CEST,M3.5.0,M10.5.0/3
+Venice|Italy|45.44|12.32|CET-1CEST,M3.5.0,M10.5.0/3
+Rotterdam|Netherlands|51.92|4.48|CET-1CEST,M3.5.0,M10.5.0/3
+Geneva|Switzerland|46.20|6.14|CET-1CEST,M3.5.0,M10.5.0/3
+Krakow|Poland|50.06|19.94|CET-1CEST,M3.5.0,M10.5.0/3
+Belgrade|Serbia|44.79|20.45|CET-1CEST,M3.5.0,M10.5.0/3
+Zagreb|Croatia|45.81|15.98|CET-1CEST,M3.5.0,M10.5.0/3
+Gothenburg|Sweden|57.71|11.97|CET-1CEST,M3.5.0,M10.5.0/3
+Tunis|Tunisia|36.81|10.18|CET-1
+Sofia|Bulgaria|42.70|23.32|EET-2EEST,M3.5.0/3,M10.5.0/4
+Riga|Latvia|56.95|24.11|EET-2EEST,M3.5.0/3,M10.5.0/4
+Vilnius|Lithuania|54.69|25.28|EET-2EEST,M3.5.0/3,M10.5.0/4
+Tallinn|Estonia|59.44|24.75|EET-2EEST,M3.5.0/3,M10.5.0/4
+Thessaloniki|Greece|40.64|22.94|EET-2EEST,M3.5.0/3,M10.5.0/4
+Tel Aviv|Israel|32.09|34.78|IST-2IDT,M3.4.4/26,M10.5.0
+Harare|Zimbabwe|-17.83|31.05|CAT-2
+Lusaka|Zambia|-15.39|28.32|CAT-2
+Khartoum|Sudan|15.50|32.56|CAT-2
+Saint Petersburg|Russia|59.93|30.34|MSK-3
+Ankara|Turkey|39.93|32.86|<+03>-3
+Doha|Qatar|25.29|51.53|<+03>-3
+Kuwait City|Kuwait|29.38|47.99|<+03>-3
+Jeddah|Saudi Arabia|21.49|39.19|<+03>-3
+Dar es Salaam|Tanzania|-6.79|39.21|EAT-3
+Kampala|Uganda|0.35|32.58|EAT-3
+Tehran|Iran|35.69|51.39|<+0330>-3:30
+Abu Dhabi|UAE|24.45|54.38|<+04>-4
+Muscat|Oman|23.59|58.41|<+04>-4
+Yerevan|Armenia|40.18|44.51|<+04>-4
+Kabul|Afghanistan|34.56|69.21|<+0430>-4:30
+Lahore|Pakistan|31.55|74.34|PKT-5
+Islamabad|Pakistan|33.68|73.05|PKT-5
+Yekaterinburg|Russia|56.84|60.61|<+05>-5
+Chennai|India|13.08|80.27|IST-5:30
+Hyderabad|India|17.39|78.49|IST-5:30
+Pune|India|18.52|73.86|IST-5:30
+Ahmedabad|India|23.03|72.58|IST-5:30
+Jaipur|India|26.91|75.79|IST-5:30
+Yangon|Myanmar|16.87|96.20|<+0630>-6:30
+Novosibirsk|Russia|55.01|82.94|<+07>-7
+Ho Chi Minh City|Vietnam|10.82|106.63|<+07>-7
+Phnom Penh|Cambodia|11.56|104.92|<+07>-7
+Surabaya|Indonesia|-7.25|112.75|WIB-7
+Guangzhou|China|23.13|113.26|CST-8
+Chengdu|China|30.57|104.07|CST-8
+Wuhan|China|30.59|114.31|CST-8
+Xian|China|34.34|108.94|CST-8
+Hangzhou|China|30.27|120.15|CST-8
+Chongqing|China|29.56|106.55|CST-8
+Macau|China|22.20|113.54|CST-8
+Cebu|Philippines|10.32|123.89|PST-8
+Denpasar|Indonesia|-8.65|115.22|WITA-8
+Nagoya|Japan|35.18|136.91|JST-9
+Sapporo|Japan|43.06|141.35|JST-9
+Fukuoka|Japan|33.59|130.40|JST-9
+Busan|South Korea|35.18|129.08|KST-9
+Darwin|Australia|-12.46|130.84|ACST-9:30
+Hobart|Australia|-42.88|147.33|AEST-10AEDT,M10.1.0,M4.1.0/3
+Gold Coast|Australia|-28.02|153.40|AEST-10
+Christchurch|New Zealand|-43.53|172.64|NZST-12NZDT,M9.5.0,M4.1.0/3
