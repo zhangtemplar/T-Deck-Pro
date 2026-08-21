@@ -9,6 +9,7 @@
 #include "ui_deckpro.h"
 #include "ui_deckpro_port.h"
 #include "power_mgr.h"
+#include "ui_gps_enhanced.h"
 #include "world_map.h"
 #include "utilities.h"          /* BOARD_SD_CS */
 #include <SD.h>
@@ -365,7 +366,7 @@ static bool save_gpx()
 static void track_toggle()
 {
     if (tracking) {
-        tracking = false;
+        tracking = false;      /* releases the idle-mode hold */
         Serial.printf("[GPS] Track stopped: %d points, %.0fm\n", (int)track.size(), track_dist_m);
         save_gpx();
     } else {
@@ -381,9 +382,14 @@ static void track_toggle()
             ? utc_to_epoch(cur_year, cur_month, cur_day, cur_hour, cur_min, cur_sec)
             : 0;
         tracking = true;
-        Serial.println("[GPS] Track started");
+        /* From here the idle manager sees us as busy, so the receiver keeps
+         * its power and the CPU its clock even with nobody pressing keys. */
+        Serial.println("[GPS] Track started (GPS held on, idle disabled)");
     }
 }
+
+/* Queried by the idle manager — see ui_gps_enhanced.h. */
+bool gps_track_is_recording(void) { return tracking; }
 
 static void track_record_point()
 {

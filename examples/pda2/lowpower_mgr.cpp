@@ -9,6 +9,7 @@
 #include "peripheral.h"
 #include "pdm_recorder.h"
 #include "file_server.h"
+#include "ui_gps_enhanced.h"
 #include "power_mgr.h"
 
 static uint32_t s_timeout_ms = LOWPOWER_DEFAULT_TIMEOUT_MS;
@@ -48,6 +49,9 @@ static bool busy(void)
     if (s_inhibit > 0) return true;
     if (pdm_record_is_active() || pdm_play_is_active()) return true;
     if (file_server_is_running()) return true;
+    /* A track recording is the one job that runs for hours with no input at
+     * all; idling would cut the receiver's power and lose the rest of it. */
+    if (gps_track_is_recording()) return true;
     return false;
 }
 
