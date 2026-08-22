@@ -9,6 +9,7 @@
 #include "peripheral.h"
 #include "config_keys.h"
 #include "gps_assist.h"
+#include "gps_dbd.h"
 
 static int s_refs[PWR_RAIL_COUNT];
 static bool s_on[PWR_RAIL_COUNT];
@@ -67,6 +68,9 @@ static bool rail_on(pwr_rail_t rail)
          * search blind — this is what actually shortens time-to-first-fix.
          * Brings WiFi up briefly only if it can contribute something. */
         gps_assist_apply();
+        /* Then the orbits it knew before the rail dropped. Time first is
+         * u-blox's stated order: the receiver dates the records against it. */
+        gps_dbd_restore();
         gps_task_resume();
         return true;
 
@@ -99,8 +103,12 @@ static void rail_off(pwr_rail_t rail)
         break;
 
     case PWR_GPS:
-        /* Stop parsing first so the task isn't reading a dead UART. */
+        /* Stop parsing first so the task isn't reading a dead UART, then take
+         * the navigation database off the receiver before the rail goes: the
+         * enable pin cuts its backup supply too, so this is the only copy that
+         * will exist a moment from now. */
         gps_task_suspend();
+        gps_dbd_save();
         digitalWrite(BOARD_GPS_EN, LOW);
         break;
 
@@ -177,9 +185,25 @@ void power_release(pwr_rail_t rail)
     Serial.printf("[PWR] %s off\n", k_names[rail]);
 }
 
+/* Snapshot the navigation database periodically as well as on rail-off.
+ * Releasing the rail is the tidy path; a flat battery or a hard power-off is
+ * not, and those are exactly the cases the user notices. The interval is long
+ * because the dump suspends the parser for a moment, and short relative to
+ * the ~4 h that broadcast ephemeris stays useful. */
+#define DBD_SNAPSHOT_MS (20u * 60u * 1000u)
+static uint32_t s_dbd_next = DBD_SNAPSHOT_MS;
+
 void power_mgr_tick(void)
 {
     uint32_t now = millis();
+
+    if (s_on[PWR_GPS] && (int32_t)(now - s_dbd_next) >= 0) {
+        s_dbd_next = now + DBD_SNAPSHOT_MS;
+        gps_task_suspend();
+        gps_dbd_save();
+        gps_task_resume();
+    }
+
     for (int i = 0; i < PWR_RAIL_COUNT; i++) {
         if (!s_on[i] || s_refs[i] > 0 || s_off_at[i] == 0) continue;
         if ((int32_t)(now - s_off_at[i]) < 0) continue;

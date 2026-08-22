@@ -4,7 +4,8 @@
  *
  * Page 1: search and results. Every enabled dictionary that has the word
  *         contributes an entry, headed by its bookname.
- * Page 2: which dictionaries to use. The choice is persisted, and it bounds
+ * Page 2: which dictionaries to use, reached by the gear beside the search
+ *         box. The choice is persisted, and it bounds
  *         memory as well as results — each loaded index lives in PSRAM and is
  *         freed when its dictionary is switched off.
  *
@@ -125,21 +126,45 @@ static void do_search()
 /* ---- scrolling the result ----
  *
  * Definitions routinely run past one screen, more so now that several
- * dictionaries can contribute. Scroll a page at a time with LV_ANIM_OFF:
- * smooth scrolling would repaint the panel for every animation step, where
- * this costs exactly one refresh per press. Touch dragging works too. */
+ * dictionaries can contribute. Tap the top or bottom half of the result area
+ * to move a page; dragging scrolls freely as it always did.
+ *
+ * The two don't collide: LVGL only sends LV_EVENT_CLICKED when the press
+ * ended without scrolling, so a drag scrolls and a tap pages. */
 
 static void scroll_result(int dir)
 {
     if (!result_cont) return;
+
+    /* The label's height is only known once laid out, and a search may have
+     * replaced the text since the last refresh. */
+    lv_obj_update_layout(result_cont);
+
+    /* Clamp to what is actually left, so paging at either end doesn't burn a
+     * refresh scrolling into blank space. */
+    lv_coord_t room = (dir > 0) ? lv_obj_get_scroll_bottom(result_cont)
+                                : lv_obj_get_scroll_top(result_cont);
+    if (room <= 0) return;
+
     lv_coord_t h = lv_obj_get_height(result_cont);
     lv_coord_t step = (h > 60) ? (h - 24) : h;      /* keep a little overlap */
+    if (step > room) step = room;
+
     lv_obj_scroll_by(result_cont, 0, dir > 0 ? -step : step, LV_ANIM_OFF);
     ui_disp_full_refr();
 }
 
-static void scroll_up_cb(lv_event_t *e)   { scroll_result(-1); }
-static void scroll_down_cb(lv_event_t *e) { scroll_result(+1); }
+static void result_click_cb(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    lv_area_t a;
+    lv_obj_get_coords(result_cont, &a);
+    scroll_result(p.y > (a.y1 + a.y2) / 2 ? +1 : -1);
+}
 
 /* ---- page 2: which dictionaries to use ---- */
 
@@ -192,8 +217,8 @@ static void refresh_dict_list(void)
 
 /* ---- pages ---- */
 
-/* No page indicator: the Dicts button already says where the other page is,
- * and dropping it gives the whole bottom strip back to the result. */
+/* No page indicator: the gear beside the search box is where the other page
+ * lives, and dropping the strip gives the space back to the result. */
 static void show_dict_page(int pg)
 {
     dict_page = pg;
@@ -287,6 +312,8 @@ static void dict_create(lv_obj_t *parent)
     lv_obj_set_style_pad_all(result_cont, 0, LV_PART_MAIN);
     lv_obj_set_scroll_dir(result_cont, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(result_cont, LV_SCROLLBAR_MODE_ON);
+    lv_obj_add_flag(result_cont, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(result_cont, result_click_cb, LV_EVENT_CLICKED, NULL);
 
     result_label = lv_label_create(result_cont);
     lv_obj_set_width(result_label, lv_pct(100));
@@ -299,46 +326,43 @@ static void dict_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(status_label, &g_font_cn, LV_PART_MAIN);
     lv_obj_set_style_text_color(status_label, lv_palette_main(LV_PALETTE_GREY), LV_PART_MAIN);
 
-    /* Controls row. These are buttons rather than shortcuts because every
-     * printable key belongs to the search box, and Enter has to mean search —
-     * overloading it previously stranded you on a page that ignored typing. */
-    lv_obj_t *row = lv_obj_create(pages[0]);
-    lv_obj_set_size(row, lv_pct(100), 30);
-    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    /* Search row: the box takes the width it can, the dictionary chooser sits
+     * beside it as an icon. It used to be a labelled button on a row of its
+     * own, together with the up/down buttons that swiping has now replaced —
+     * a whole 30 px strip spent on three controls, two of which are gone. */
+    lv_obj_t *srow = lv_obj_create(pages[0]);
+    lv_obj_set_width(srow, lv_pct(100));
+    lv_obj_set_height(srow, 38);
+    lv_obj_set_style_border_width(srow, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(srow, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(srow, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(srow, 4, LV_PART_MAIN);
+    lv_obj_clear_flag(srow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(srow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(srow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    struct { const char *txt; lv_event_cb_t cb; lv_coord_t w; lv_coord_t x; } ctrls[] = {
-        { LV_SYMBOL_LIST " Dicts", open_dicts_cb,  110,   0 },
-        { LV_SYMBOL_UP,            scroll_up_cb,    50, 118 },
-        { LV_SYMBOL_DOWN,          scroll_down_cb,  50, 174 },
-    };
-    for (unsigned i = 0; i < sizeof(ctrls) / sizeof(ctrls[0]); i++) {
-        lv_obj_t *b = lv_btn_create(row);
-        lv_obj_set_size(b, ctrls[i].w, 26);
-        lv_obj_set_pos(b, ctrls[i].x, 0);
-        lv_obj_set_style_radius(b, 6, LV_PART_MAIN);
-        lv_obj_set_style_border_width(b, 1, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(b, lv_color_white(), LV_PART_MAIN);
-        lv_obj_add_event_cb(b, ctrls[i].cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_t *l = lv_label_create(b);
-        lv_label_set_text(l, ctrls[i].txt);
-        lv_obj_set_style_text_color(l, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, LV_PART_MAIN);
-        lv_obj_center(l);
-    }
-
-    search_ta = lv_textarea_create(pages[0]);
+    search_ta = lv_textarea_create(srow);
     /* No cursor blink: each blink is a full e-ink refresh, so a focused
      * field would repaint the panel twice a second forever. */
     lv_obj_set_style_anim_time(search_ta, 0, LV_PART_CURSOR);
-    lv_obj_set_width(search_ta, lv_pct(100));
+    lv_obj_set_flex_grow(search_ta, 1);
     lv_obj_set_height(search_ta, 36);
     lv_textarea_set_placeholder_text(search_ta, "Type word, Enter to search");
     lv_textarea_set_one_line(search_ta, true);
     lv_textarea_set_max_length(search_ta, 64);
     lv_obj_set_style_text_font(search_ta, &g_font_cn, LV_PART_MAIN);
+
+    lv_obj_t *dbtn = lv_btn_create(srow);
+    lv_obj_set_size(dbtn, 36, 36);
+    lv_obj_set_style_radius(dbtn, 6, LV_PART_MAIN);
+    lv_obj_set_style_border_width(dbtn, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(dbtn, lv_color_white(), LV_PART_MAIN);
+    lv_obj_add_event_cb(dbtn, open_dicts_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dlbl = lv_label_create(dbtn);
+    lv_label_set_text(dlbl, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(dlbl, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(dlbl, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_center(dlbl);
 
     /* ---- page 1: dictionary selection ---- */
     pages[1] = make_page(parent);

@@ -212,6 +212,109 @@ static void draw_world_map()
 
 /* ---- Page 3: Tracker ---- */
 
+/* The track is drawn on an equirectangular projection about its own centre.
+ * Both axes are converted to metres before scaling and share one scale
+ * factor, so a pixel is the same distance whichever way you measure it and
+ * the plot has the shape of the route rather than of the canvas. North is up
+ * by construction: screen y grows downward, so it carries minus the northing.
+ *
+ * The previous version stretched latitude and longitude independently to fill
+ * the box, which squashed the aspect and — worse — changed it as the track
+ * grew, so the same route appeared to rotate between refreshes. */
+
+#define TRACK_PAD_PX      8       /* margin kept clear around the track     */
+#define TRACK_MIN_SPAN_M  20.0    /* zoom floor: below this a parked        */
+                                  /* receiver's noise would fill the canvas */
+
+/* Metres per degree. Latitude is near enough constant; longitude shrinks
+ * with the cosine of the latitude, which is what makes the two axes
+ * comparable in the first place. */
+#define M_PER_DEG_LAT 110574.0
+#define M_PER_DEG_LNG 111320.0
+
+static double trk_scale;                  /* pixels per metre */
+static double trk_lat0, trk_lng0;         /* projection centre */
+static double trk_coslat;
+
+static void trk_project(double lat, double lng, int *x, int *y)
+{
+    double east  = (lng - trk_lng0) * M_PER_DEG_LNG * trk_coslat;
+    double north = (lat - trk_lat0) * M_PER_DEG_LAT;
+    *x = (int)lround(TRACK_VIEW_W / 2.0 + east  * trk_scale);
+    *y = (int)lround(TRACK_VIEW_H / 2.0 - north * trk_scale);
+}
+
+static void trk_px(int x, int y)
+{
+    if (x >= 0 && x < TRACK_VIEW_W && y >= 0 && y < TRACK_VIEW_H)
+        lv_canvas_set_px(track_canvas, x, y, lv_color_black());
+}
+
+/* A north arrow, top-right. With the aspect now honest the orientation is
+ * worth stating rather than leaving the user to infer it. */
+static void draw_north_arrow(void)
+{
+    const int x = TRACK_VIEW_W - 12, y0 = 20, y1 = 40;
+
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.color = lv_color_black();
+    d.width = 1;
+    lv_point_t shaft[2] = {{(lv_coord_t)x, (lv_coord_t)y0}, {(lv_coord_t)x, (lv_coord_t)y1}};
+    lv_canvas_draw_line(track_canvas, shaft, 2, &d);
+
+    for (int i = 0; i <= 4; i++) {        /* arrowhead */
+        trk_px(x - i, y0 + i);
+        trk_px(x + i, y0 + i);
+    }
+
+    lv_draw_label_dsc_t ld;
+    lv_draw_label_dsc_init(&ld);
+    ld.color = lv_color_black();
+    ld.font  = &lv_font_montserrat_14;
+    lv_canvas_draw_text(track_canvas, x - 5, y1 + 1, 12, &ld, "N");
+}
+
+/* A scale bar, bottom-left. Only meaningful because both axes now share a
+ * scale — which is the point of showing it. */
+static void draw_scale_bar(void)
+{
+    static const double nice[] = {10, 20, 50, 100, 200, 500,
+                                  1000, 2000, 5000, 10000, 20000, 50000};
+    const int max_px = 70;
+
+    double metres = nice[0];
+    for (unsigned i = 0; i < sizeof(nice) / sizeof(nice[0]); i++) {
+        if (nice[i] * trk_scale <= max_px) metres = nice[i];
+        else break;
+    }
+    int len = (int)lround(metres * trk_scale);
+    if (len < 4) return;                  /* too zoomed out to say anything */
+
+    const int x0 = 6, y = TRACK_VIEW_H - 8;
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.color = lv_color_black();
+    d.width = 1;
+    lv_point_t bar[2] = {{(lv_coord_t)x0, (lv_coord_t)y},
+                         {(lv_coord_t)(x0 + len), (lv_coord_t)y}};
+    lv_canvas_draw_line(track_canvas, bar, 2, &d);
+    for (int t = 0; t < 3; t++) {         /* end ticks */
+        trk_px(x0, y - t);
+        trk_px(x0 + len, y - t);
+    }
+
+    char buf[16];
+    if (metres >= 1000) snprintf(buf, sizeof(buf), "%gkm", metres / 1000);
+    else                snprintf(buf, sizeof(buf), "%gm", metres);
+
+    lv_draw_label_dsc_t ld;
+    lv_draw_label_dsc_init(&ld);
+    ld.color = lv_color_black();
+    ld.font  = &lv_font_montserrat_14;
+    lv_canvas_draw_text(track_canvas, x0 + len + 4, y - 9, 60, &ld, buf);
+}
+
 static void draw_track()
 {
     if (!track_canvas) return;
@@ -228,7 +331,7 @@ static void draw_track()
         return;
     }
 
-    /* Find bounding box */
+    /* Bounding box, then project about its centre. */
     double min_lat = 90, max_lat = -90, min_lng = 180, max_lng = -180;
     for (auto &p : track) {
         if (p.lat < min_lat) min_lat = p.lat;
@@ -237,35 +340,51 @@ static void draw_track()
         if (p.lng > max_lng) max_lng = p.lng;
     }
 
-    double pad = 0.001;
-    double dlat = max_lat - min_lat + pad * 2;
-    double dlng = max_lng - min_lng + pad * 2;
-    min_lat -= pad; min_lng -= pad;
+    trk_lat0  = (min_lat + max_lat) / 2;
+    trk_lng0  = (min_lng + max_lng) / 2;
+    trk_coslat = cos(trk_lat0 * M_PI / 180.0);
+    if (trk_coslat < 0.01) trk_coslat = 0.01;      /* keep the poles finite */
 
-    /* Draw track lines */
+    double span_x = (max_lng - min_lng) * M_PER_DEG_LNG * trk_coslat;
+    double span_y = (max_lat - min_lat) * M_PER_DEG_LAT;
+    if (span_x < TRACK_MIN_SPAN_M) span_x = TRACK_MIN_SPAN_M;
+    if (span_y < TRACK_MIN_SPAN_M) span_y = TRACK_MIN_SPAN_M;
+
+    /* One scale for both axes: whichever direction runs out of room first. */
+    double sx_fit = (TRACK_VIEW_W - 2.0 * TRACK_PAD_PX) / span_x;
+    double sy_fit = (TRACK_VIEW_H - 2.0 * TRACK_PAD_PX) / span_y;
+    trk_scale = sx_fit < sy_fit ? sx_fit : sy_fit;
+
     lv_draw_line_dsc_t line_dsc;
     lv_draw_line_dsc_init(&line_dsc);
     line_dsc.color = lv_color_black();
     line_dsc.width = 2;
 
+    int px = 0, py = 0;
+    trk_project(track[0].lat, track[0].lng, &px, &py);
     for (size_t i = 1; i < track.size(); i++) {
-        int x1 = (int)((track[i-1].lng - min_lng) / dlng * (TRACK_VIEW_W - 10)) + 5;
-        int y1 = (int)((max_lat + pad - track[i-1].lat) / dlat * (TRACK_VIEW_H - 10)) + 5;
-        int x2 = (int)((track[i].lng - min_lng) / dlng * (TRACK_VIEW_W - 10)) + 5;
-        int y2 = (int)((max_lat + pad - track[i].lat) / dlat * (TRACK_VIEW_H - 10)) + 5;
-        lv_point_t pts[2] = {{(lv_coord_t)x1,(lv_coord_t)y1},{(lv_coord_t)x2,(lv_coord_t)y2}};
+        int x, y;
+        trk_project(track[i].lat, track[i].lng, &x, &y);
+        lv_point_t pts[2] = {{(lv_coord_t)px, (lv_coord_t)py},
+                             {(lv_coord_t)x,  (lv_coord_t)y}};
         lv_canvas_draw_line(track_canvas, pts, 2, &line_dsc);
+        px = x; py = y;
     }
 
-    /* Mark start with circle, end with filled square */
-    int sx = (int)((track[0].lng - min_lng) / dlng * (TRACK_VIEW_W - 10)) + 5;
-    int sy = (int)((max_lat + pad - track[0].lat) / dlat * (TRACK_VIEW_H - 10)) + 5;
-    for (int a = 0; a < 360; a += 15) {
-        int cx = sx + (int)(3 * cos(a * M_PI / 180));
-        int cy = sy + (int)(3 * sin(a * M_PI / 180));
-        if (cx >= 0 && cx < TRACK_VIEW_W && cy >= 0 && cy < TRACK_VIEW_H)
-            lv_canvas_set_px(track_canvas, cx, cy, lv_color_black());
-    }
+    /* Start: open circle. */
+    int sx, sy;
+    trk_project(track[0].lat, track[0].lng, &sx, &sy);
+    for (int a = 0; a < 360; a += 15)
+        trk_px(sx + (int)lround(3 * cos(a * M_PI / 180)),
+               sy + (int)lround(3 * sin(a * M_PI / 180)));
+
+    /* End: filled square. */
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -2; dx <= 2; dx++)
+            trk_px(px + dx, py + dy);
+
+    draw_north_arrow();
+    draw_scale_bar();
 }
 
 static void update_track_info()
@@ -273,6 +392,10 @@ static void update_track_info()
     if (!lbl_track_info) return;
     if (!tracking && track.empty()) {
         lv_label_set_text(lbl_track_info, "S: start tracking");
+        return;
+    }
+    if (tracking && !has_fix) {
+        lv_label_set_text(lbl_track_info, "ARMED  waiting for fix...  S: stop");
         return;
     }
     uint32_t elapsed = tracking ? (millis() - track_start_ms) / 1000 : 0;
@@ -370,7 +493,9 @@ static void track_toggle()
         Serial.printf("[GPS] Track stopped: %d points, %.0fm\n", (int)track.size(), track_dist_m);
         save_gpx();
     } else {
-        if (!has_fix) return;
+        /* Arm even without a fix rather than ignoring the key. Refusing in
+         * silence made the receiver's own slowness look like a dead keyboard;
+         * track_record_point() already waits for a fix before logging. */
         track.clear();
         track_dist_m = 0;
         track_start_ms = millis();
@@ -384,7 +509,8 @@ static void track_toggle()
         tracking = true;
         /* From here the idle manager sees us as busy, so the receiver keeps
          * its power and the CPU its clock even with nobody pressing keys. */
-        Serial.println("[GPS] Track started (GPS held on, idle disabled)");
+        Serial.printf("[GPS] Track %s (GPS held on, idle disabled)\n",
+                      has_fix ? "started" : "armed, waiting for fix");
     }
 }
 
@@ -530,8 +656,8 @@ void gps_keyboard_poll()
         else { gps_kbd_active = false; scr_mgr_pop(false); }
     } else if (c == '\n' || c == ' ') {
         show_gps_page((gps_page + 1) % GPS_PAGE_COUNT);
-    } else if (c == 's' && gps_page == 2) {
-        track_toggle();
+    } else if ((c == 's' || c == 'S') && gps_page == 2) {
+        track_toggle();               /* shifted S counts too */
     }
 }
 

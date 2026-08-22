@@ -19,31 +19,54 @@ static uint32_t gps_vsat=0;
 
 uint8_t buffer[256];
 
+/* Listen for NMEA at the rate the UART is currently open at. */
+static bool gps_link_listen(uint32_t ms)
+{
+    uint32_t t0 = millis();
+    int starts = 0;
+    while (millis() - t0 < ms) {
+        while (SerialGPS.available()) {
+            if (SerialGPS.read() == '$' && ++starts >= 2) return true;
+        }
+        delay(10);
+    }
+    return false;
+}
+
 /* Negotiate the UART link and put the receiver into a known configuration.
  *
- * This has to run every time the module's supply is switched on, not just at
- * boot: a power cycle returns the receiver to its power-up defaults, so the
- * baud rate it talks at and the UBX settings applied here are both lost. Skip
- * it and the parser task sees nothing usable and the app reports no satellites
- * indefinitely — which looks exactly like a very slow fix. */
+ * This has to run every time the module's supply is switched on: a power
+ * cycle returns the receiver to its power-up defaults, so the baud rate it
+ * talks at is not necessarily the one we left it at.
+ *
+ * Listen at both plausible rates before doing anything about it. GPS_Recovery()
+ * sends UBX-CFG-CFG with a clear mask over BBR and flash — a factory reset of
+ * the receiver's configuration. Running that on every power-on, as this used
+ * to, meant nothing the receiver knew ever survived: not the baud rate, not
+ * the navigation database. It is a last resort, not an initialisation step. */
 static bool gps_link_setup(void)
 {
-    bool result = false;
-    // L76K GPS USE 9600 BAUDRATE
-    // result = setupGPS();
-    if(!result) {
-        // Set u-blox m10q gps baudrate 38400
-        SerialGPS.begin(38400, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
-        result = GPS_Recovery();
-        if (!result) {
-            SerialGPS.updateBaudRate(9600);
-            result = GPS_Recovery();
-            if (!result) {
-                Serial.println("GPS Connect failed~!");
-                result = false;
-            }
-            SerialGPS.updateBaudRate(38400);
+    static const uint32_t bauds[] = {38400, 9600};
+
+    for (unsigned i = 0; i < sizeof(bauds) / sizeof(bauds[0]); i++) {
+        SerialGPS.begin(bauds[i], SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
+        if (gps_link_listen(1200)) {
+            Serial.printf("[GPS] receiver talking at %lu baud\n",
+                          (unsigned long)bauds[i]);
+            return true;                 /* leave it where it is and listen */
         }
+    }
+
+    Serial.println("[GPS] silent at 38400 and 9600, forcing recovery");
+    SerialGPS.begin(38400, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
+    bool result = GPS_Recovery();
+    if (!result) {
+        SerialGPS.updateBaudRate(9600);
+        result = GPS_Recovery();
+        /* Stay at 9600 if that is where it answered — switching the ESP32's
+         * UART to 38400 while the receiver is still at 9600 just guarantees
+         * silence, which is what the old code did here. */
+        if (!result) Serial.println("GPS Connect failed~!");
     }
     return result;
 }
@@ -58,30 +81,15 @@ bool gps_init(void)
     return result;
 }
 
-/* Is the receiver already streaming NMEA at the expected rate? */
-static bool gps_link_probe(uint32_t ms)
-{
-    SerialGPS.begin(38400, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
-    uint32_t t0 = millis();
-    int starts = 0;
-    while (millis() - t0 < ms) {
-        while (SerialGPS.available()) {
-            if (SerialGPS.read() == '$' && ++starts >= 2) return true;
-        }
-        delay(10);
-    }
-    return false;
-}
-
 /* Re-run the link setup after the receiver has been power cycled.
  *
- * Probe before negotiating. gps_link_setup() sends UBX-CFG-CFG clear/load,
- * which resets the receiver's configuration to defaults, and its four ack
- * waits cost up to ~3 s per baud attempt. Doing that on every power-on is both
- * slow and needlessly destructive when the receiver is already talking. */
+ * Listen before negotiating: if the receiver is already streaming at the rate
+ * we expect there is nothing to do, and gps_link_setup()'s ack waits cost
+ * seconds. */
 bool gps_reinit(void)
 {
-    if (gps_link_probe(1500)) {
+    SerialGPS.begin(38400, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
+    if (gps_link_listen(1500)) {
         Serial.println("[GPS] link alive at 38400, no re-negotiation needed");
         return true;
     }
