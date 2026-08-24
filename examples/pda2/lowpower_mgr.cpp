@@ -76,14 +76,15 @@ static void enter_idle(void)
 
     show_icon(true);
 
-    /* Park every radio, including ones a screen still holds a reference to.
-     * References are preserved, so exit_idle() puts back exactly what was in
-     * use. Nothing that must keep running gets here — busy() covers active
-     * transfers, recording and playback. */
+    /* Park the radios nothing is holding. Anything a screen still has a
+     * reference to stays powered — see power_suspend_all(). */
     power_suspend_all();
 
-    setCpuFrequencyMhz(LOWPOWER_IDLE_MHZ);
-    Serial.printf("[LOWPWR] idle: cpu %d MHz\n", LOWPOWER_IDLE_MHZ);
+    /* 40 MHz is only safe once every radio is off; WiFi needs 80. Rails an app
+     * still holds are no longer parked, so ask rather than assume. */
+    int mhz = power_any_rail_on() ? LOWPOWER_RADIO_MHZ : LOWPOWER_IDLE_MHZ;
+    setCpuFrequencyMhz(mhz);
+    Serial.printf("[LOWPWR] idle: cpu %d MHz\n", mhz);
     power_log_state("idle");
 }
 

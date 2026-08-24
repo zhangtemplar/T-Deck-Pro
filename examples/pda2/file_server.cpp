@@ -25,6 +25,7 @@
 extern void shared_spi_lock(void);
 extern void shared_spi_unlock(void);
 extern void shared_spi_prepare_device(int cs_pin);
+extern bool sd_ensure_mounted(void);
 
 static WebServer s_server(80);
 static bool s_running = false;
@@ -156,6 +157,16 @@ static void handle_list(void)
             "<input type='submit' value='Create folder'></form>";
 
     page += F("<table><tr><th>Name</th><th class='r'>Size</th><th class='r'></th></tr>");
+
+    /* A card inserted after boot is not mounted until something asks. Without
+     * this, an unmounted card looked identical to an empty one — the browser
+     * just said the root was not a directory. */
+    if (!sd_ensure_mounted()) {
+        s_server.send(503, "text/plain",
+                      "SD card not mounted. Check it is inserted and formatted "
+                      "FAT32 (exFAT is not supported by this firmware).");
+        return;
+    }
 
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);

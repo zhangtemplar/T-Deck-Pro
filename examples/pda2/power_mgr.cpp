@@ -221,12 +221,33 @@ void power_suspend_all(void)
 
     for (int i = 0; i < PWR_RAIL_COUNT; i++) {
         if (!s_on[i]) continue;
+
+        /* Leave alone anything an app is actually holding.
+         *
+         * This used to park every rail, references and all, on the theory that
+         * idle means idle. For GPS that was badly wrong: acquiring a fix takes
+         * minutes of uninterrupted reception and generates no key or touch
+         * activity, so the idle timer would fire mid-acquisition and cut the
+         * receiver's power. The next keypress restored the rail and started
+         * the search over — a fix could never complete. A held reference means
+         * a screen is using the rail right now, whatever the input timer says. */
+        if (s_refs[i] > 0) {
+            Serial.printf("[PWR] %s kept (idle, but %d ref%s held)\n",
+                          k_names[i], s_refs[i], s_refs[i] == 1 ? "" : "s");
+            continue;
+        }
+
         rail_off((pwr_rail_t)i);
         s_on[i] = false;
         s_off_at[i] = 0;
-        Serial.printf("[PWR] %s parked (idle, %d ref%s held)\n",
-                      k_names[i], s_refs[i], s_refs[i] == 1 ? "" : "s");
+        Serial.printf("[PWR] %s parked (idle, lingering)\n", k_names[i]);
     }
+}
+
+bool power_any_rail_on(void)
+{
+    for (int i = 0; i < PWR_RAIL_COUNT; i++) if (s_on[i]) return true;
+    return false;
 }
 
 void power_resume_all(void)

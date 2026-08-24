@@ -5,7 +5,8 @@
 #include "gps_dbd.h"
 
 #include <Arduino.h>
-#include <Preferences.h>
+#include <SD.h>
+#include "utilities.h"
 #include <string.h>
 #include <time.h>
 
@@ -28,9 +29,19 @@
  * possibly help any more. */
 #define DBD_MAX_AGE_S   (30L * 24 * 3600)
 
-#define NVS_NS   "gpsdbd"
-#define NVS_BLOB "db"
-#define NVS_TIME "ts"
+/* On the card, not in NVS. The dump runs to several kilobytes and the default
+ * NVS partition is 20 KB in total — putBytes there failed with a blob error
+ * and every restore then reported a short read, so the aiding never happened. */
+#define DBD_PATH "/gps_dbd.bin"
+
+/* 8-byte header so a truncated or foreign file is rejected rather than fed to
+ * the receiver. */
+#define DBD_MAGIC 0x31444244u    /* "DBD1" */
+
+extern void shared_spi_lock(void);
+extern void shared_spi_unlock(void);
+extern void shared_spi_prepare_device(int cs_pin);
+extern bool sd_ensure_mounted(void);
 
 /* ---- UBX frame reader ----
  *
@@ -140,26 +151,58 @@ bool gps_dbd_save(void)
     time_t now;
     time(&now);
 
-    Preferences p;
-    p.begin(NVS_NS, false);
-    size_t w = p.putBytes(NVS_BLOB, buf, n);
-    p.putULong(NVS_TIME, (uint32_t)now);
-    p.end();
+    size_t w = 0;
+    if (sd_ensure_mounted()) {
+        shared_spi_lock();
+        shared_spi_prepare_device(BOARD_SD_CS);
+        File f = SD.open(DBD_PATH, FILE_WRITE);
+        if (f) {
+            uint32_t hdr[2] = { DBD_MAGIC, (uint32_t)now };
+            if (f.write((const uint8_t *)hdr, sizeof(hdr)) == sizeof(hdr))
+                w = f.write(buf, n);
+            f.close();
+        }
+        shared_spi_unlock();
+    }
     free(buf);
 
-    Serial.printf("[DBD] saved %u bytes of nav database%s\n",
-                  (unsigned)w, w == n ? "" : " (SHORT WRITE)");
-    return w == n;
+    if (w != n) {
+        Serial.println("[DBD] could not write " DBD_PATH);
+        return false;
+    }
+    Serial.printf("[DBD] saved %u bytes of nav database\n", (unsigned)w);
+    return true;
+}
+
+/* Header of the stored dump, or false if there isn't a usable one. */
+static bool dbd_header(uint32_t *when, uint32_t *bytes)
+{
+    if (!sd_ensure_mounted()) return false;
+    bool ok = false;
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    if (SD.exists(DBD_PATH)) {
+        File f = SD.open(DBD_PATH, FILE_READ);
+        if (f) {
+            uint32_t hdr[2];
+            if (f.size() > sizeof(hdr) &&
+                f.read((uint8_t *)hdr, sizeof(hdr)) == (int)sizeof(hdr) &&
+                hdr[0] == DBD_MAGIC) {
+                if (when)  *when  = hdr[1];
+                if (bytes) *bytes = (uint32_t)f.size() - sizeof(hdr);
+                ok = true;
+            }
+            f.close();
+        }
+    }
+    shared_spi_unlock();
+    return ok;
 }
 
 long gps_dbd_age_s(void)
 {
-    Preferences p;
-    p.begin(NVS_NS, true);
-    size_t   n  = p.getBytesLength(NVS_BLOB);
-    uint32_t ts = p.getULong(NVS_TIME, 0);
-    p.end();
-    if (n == 0 || ts == 0) return -1;
+    uint32_t ts = 0, bytes = 0;
+    if (!dbd_header(&ts, &bytes) || !bytes || !ts) return -1;
 
     time_t now;
     time(&now);
@@ -171,12 +214,8 @@ long gps_dbd_age_s(void)
 
 bool gps_dbd_restore(void)
 {
-    Preferences p;
-    p.begin(NVS_NS, true);
-    size_t n = p.getBytesLength(NVS_BLOB);
-    p.end();
-
-    if (n == 0) {
+    uint32_t ts = 0, n = 0;
+    if (!dbd_header(&ts, &n)) {
         Serial.println("[DBD] nothing stored yet (first run after a power cut)");
         return false;
     }
@@ -193,12 +232,18 @@ bool gps_dbd_restore(void)
         return false;
     }
 
-    p.begin(NVS_NS, true);
-    size_t got = p.getBytes(NVS_BLOB, buf, n);
-    p.end();
+    bool read_ok = false;
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    File f = SD.open(DBD_PATH, FILE_READ);
+    if (f) {
+        read_ok = f.seek(8) && f.read(buf, n) == (int)n;
+        f.close();
+    }
+    shared_spi_unlock();
 
-    if (got != n) {
-        Serial.println("[DBD] short read from NVS");
+    if (!read_ok) {
+        Serial.println("[DBD] short read from " DBD_PATH);
         free(buf);
         return false;
     }

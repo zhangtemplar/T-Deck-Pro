@@ -466,6 +466,28 @@ static bool sd_care_init(void)
     return true;
 }
 
+/* The card is mounted once at boot, so anything inserted or re-seated later
+ * is invisible until something asks for it — which showed up as an empty file
+ * browser and an empty map list rather than as an error. Callers that are
+ * about to touch the card call this first; when already mounted it is a field
+ * test, not an SD operation. */
+bool sd_ensure_mounted(void)
+{
+    if (SD.cardType() != CARD_NONE) return true;
+
+    shared_spi_lock();
+    shared_spi_prepare_device(BOARD_SD_CS);
+    SD.end();                       /* drop the half-initialised driver state */
+    bool ok = SD.begin(BOARD_SD_CS, SPI);
+    shared_spi_unlock();
+
+    Serial.printf("[SD] late mount %s\n", ok ? "ok" : "FAILED");
+    if (ok) {
+        peri_init_st[E_PERI_SD] = true;
+    }
+    return ok;
+}
+
 static void a7682_task(void *param)
 {
     vTaskSuspend(a7682_handle);

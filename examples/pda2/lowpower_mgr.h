@@ -32,6 +32,8 @@ extern "C" {
  * further. Raise LOWPOWER_IDLE_MHZ back to 80 if USB CDC misbehaves at 40. */
 #define LOWPOWER_ACTIVE_MHZ 240
 #define LOWPOWER_IDLE_MHZ   40
+/* Floor while a radio an app holds is still powered; WiFi will not run below. */
+#define LOWPOWER_RADIO_MHZ  80
 
 void lowpower_init(void);
 void lowpower_poll(void);            /* call from loop() */

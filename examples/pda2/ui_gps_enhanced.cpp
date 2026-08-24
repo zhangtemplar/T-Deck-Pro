@@ -10,6 +10,9 @@
 #include "ui_deckpro_port.h"
 #include "power_mgr.h"
 #include "ui_gps_enhanced.h"
+#include "garmin_img.h"
+#include "map_draw.h"
+#include "map_store.h"
 #include "world_map.h"
 #include "utilities.h"          /* BOARD_SD_CS */
 #include <SD.h>
@@ -27,7 +30,9 @@ extern void shared_spi_prepare_device(int cs_pin);
 #define MAP_X 5
 #define MAP_Y 4
 #define MAP_W 220
-#define MAP_H 120
+#define MAP_H 236
+#define MAP_STATUS_H 16
+#define WORLD_H 120   /* the built-in coastline keeps its own aspect */
 #define TRACK_MAX 1000
 #define TRACK_VIEW_X 5
 #define TRACK_VIEW_Y 30
@@ -50,9 +55,38 @@ static bool has_fix = false;
 /* Page 1 widgets */
 static lv_obj_t *lbl_overview = NULL;
 
-/* Page 2: world map canvas */
+/* Page 2: map canvas. Draws a Garmin .img from the card when there is one,
+ * and falls back to the built-in world coastline when there is not — the
+ * coarse view is still worth having with no card in. */
 static lv_obj_t *map_canvas = NULL;
 static lv_color_t *map_buf = NULL;
+
+#define MAP_DIR "/maps"
+static bool     vmap_ready   = false;   /* a .img is open           */
+static bool     vmap_tried   = false;   /* don't rescan on every draw */
+static char     vmap_name[40] = "";
+static int32_t  view_lat = 0, view_lon = 0;   /* centre, degrees x 1e7 */
+static int32_t  view_span = 2000000;          /* canvas height, 0.2 deg */
+static bool     view_locked = false;          /* follow the fix        */
+static int      view_level = 0;
+static int      view_feats = 0;
+
+/* 0.1 degree of latitude, about 11 km down the canvas. */
+#define VIEW_SPAN_DEFAULT 1000000
+/* More tiles than a redraw can pay for; see gimg_overlap_tiles(). */
+#define VIEW_MAX_TILES    8
+
+/* Map picker overlay, on the map page. A button rather than a key: w/a/s/d,
+ * i/o and g already belong to panning. */
+static lv_obj_t *pick_ovl = NULL;
+static lv_obj_t *pick_list = NULL;
+static lv_obj_t *pick_status = NULL;
+static lv_obj_t *map_btn = NULL;
+static lv_obj_t *map_btn_lbl = NULL;
+static lv_obj_t *map_ctr_lbl = NULL;
+static bool      pick_open = false;
+static mapstore_entry_t pick_items[MAPSTORE_MAX];
+static int       pick_count = 0;
 
 /* Page 3: tracker */
 struct track_pt { double lat, lng; uint32_t ms; };
@@ -90,8 +124,20 @@ static float haversine_m(double lat1, double lon1, double lat2, double lon2)
     return 6371000.0 * 2.0 * atan2(sqrt(a), sqrt(1-a));
 }
 
+static void pick_close(void);
+
 static void show_gps_page(int pg)
 {
+    if (pick_open && pg != 1) pick_close();
+    /* The map page hands its bottom strip to the map chooser. */
+    if (map_btn) {
+        if (pg == 1) lv_obj_clear_flag(map_btn, LV_OBJ_FLAG_HIDDEN);
+        else         lv_obj_add_flag(map_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (page_ind) {
+        if (pg == 1) lv_obj_add_flag(page_ind, LV_OBJ_FLAG_HIDDEN);
+        else         lv_obj_clear_flag(page_ind, LV_OBJ_FLAG_HIDDEN);
+    }
     gps_page = pg;
     for (int i = 0; i < GPS_PAGE_COUNT; i++) {
         if (pages[i]) {
@@ -148,6 +194,337 @@ static void update_overview()
 #define COAST_SEGMENTS world_coastline_count
 #define coastline      world_coastline
 
+
+/* ---- vector map from a Garmin .img ---- */
+
+static void pick_refresh(void);
+static void map_btn_update(void);
+static void draw_vector_map(void);
+static bool vmap_key(char c);
+static void map_ctrl_cb(lv_event_t *e);
+
+/* Unpacking a zip blocks for a while; keep the panel saying something. */
+static void unpack_progress(const char *what, uint32_t done, uint32_t total)
+{
+    if (!pick_status) return;
+    if (total) lv_label_set_text_fmt(pick_status, "%s %u%%", what,
+                                     (unsigned)((uint64_t)done * 100 / total));
+    else       lv_label_set_text_fmt(pick_status, "%s...", what);
+    lv_timer_handler();
+}
+
+/* Open `name` from /maps, unpacking it first if it is a zip. */
+static bool vmap_open_named(const char *name)
+{
+    if (vmap_ready) { gimg_close(); vmap_ready = false; }
+    vmap_name[0] = '\0';
+    if (!name || !name[0]) return false;
+
+    char path[128], err[96];
+    if (!mapstore_resolve(name, path, sizeof(path), err, sizeof(err), unpack_progress)) {
+        Serial.printf("[MAP] %s: %s\n", name, err);
+        if (pick_status) lv_label_set_text(pick_status, err);
+        return false;
+    }
+
+    if (pick_status) { lv_label_set_text(pick_status, "Opening..."); lv_timer_handler(); }
+
+    uint32_t t0 = millis();
+    vmap_ready = gimg_open(path);
+    Serial.printf("[MAP] open %s: %s in %lu ms\n", path,
+                  vmap_ready ? "ok" : "FAILED", (unsigned long)(millis() - t0));
+
+    if (vmap_ready) {
+        snprintf(vmap_name, sizeof(vmap_name), "%s", name);
+        int32_t a, b, c, d;
+        gimg_bounds(&a, &b, &c, &d);
+        view_lat = (a + c) / 2;
+        view_lon = (b + d) / 2;
+        /* Open at a walkable zoom, not the whole map. Fitting a country to the
+         * canvas means every tile overlaps the viewport, and each tile costs a
+         * seek across the file — that first redraw took long enough to trip
+         * the task watchdog. Zooming out is bounded the same way below. */
+        view_span = VIEW_SPAN_DEFAULT;
+        int32_t ext = c - a;
+        if (ext > 0 && ext < view_span) view_span = ext;
+        view_locked = true;
+        if (pick_status) lv_label_set_text(pick_status, gimg_describe());
+    } else if (pick_status) {
+        lv_label_set_text(pick_status, "Not a usable Garmin map");
+    }
+    map_btn_update();
+    return vmap_ready;
+}
+
+/* Load whatever was chosen last time, or the only map there is. */
+static void vmap_try_load(void)
+{
+    if (vmap_tried) return;
+    vmap_tried = true;
+
+    map_draw_set_contours(mapstore_get_contours());
+
+    char want[MAPSTORE_NAME_MAX];
+    mapstore_get_default(want, sizeof(want));
+
+    if (!want[0]) {
+        mapstore_entry_t e[MAPSTORE_MAX];
+        int n = mapstore_list(e, MAPSTORE_MAX);
+        if (n <= 0) {
+            Serial.println("[MAP] nothing in " MAPSTORE_DIR ", using built-in coastline");
+            return;
+        }
+        /* Prefer one already unpacked, so first run does not stall on a zip. */
+        int pickIdx = 0;
+        for (int i = 0; i < n; i++) if (e[i].unpacked) { pickIdx = i; break; }
+        snprintf(want, sizeof(want), "%s", e[pickIdx].name);
+    }
+    vmap_open_named(want);
+}
+
+static void vmap_feature_cb(uint8_t type, uint8_t kind,
+                            const int32_t *lat, const int32_t *lon, int n, void *user)
+{
+    map_draw_feature(type, kind, lat, lon, n);
+    view_feats++;
+}
+
+/* Keep the view on the fix while locked, and inside the map otherwise. */
+static void vmap_centre(void)
+{
+    if (view_locked && has_fix) {
+        view_lat = (int32_t)(cur_lat * 1e7);
+        view_lon = (int32_t)(cur_lng * 1e7);
+    }
+}
+
+static void draw_vector_map(void)
+{
+    if (!map_canvas || !map_buf) return;
+
+    vmap_centre();
+
+    /* Clear through LVGL so the status strip below the map area is cleared
+     * too. map_draw_clear() only covers the map itself, which left the strip
+     * as allocated — zero, which is black at LV_COLOR_DEPTH 1 — so it showed
+     * as a black bar with black-on-black text in it. */
+    lv_canvas_fill_bg(map_canvas, lv_color_white(), LV_OPA_COVER);
+
+    map_draw_begin((uint8_t *)map_buf, MAP_W, MAP_H,
+                   view_lat, view_lon, view_span,
+                   lv_color_black().full, lv_color_white().full);
+
+    /* Half a canvas of margin so features crossing the edge still draw. */
+    int32_t half_lat = view_span / 2;
+    int32_t half_lon = (int32_t)((int64_t)view_span * MAP_W / (MAP_H * 2));
+    /* Longitude degrees are shorter than latitude ones away from the equator,
+     * so the query box has to be wider than the plain aspect ratio suggests. */
+    float coslat = cosf(view_lat / 1e7f * 0.017453293f);
+    if (coslat < 0.02f) coslat = 0.02f;
+    half_lon = (int32_t)(half_lon / coslat);
+
+    int32_t qs = view_lat - half_lat, qn = view_lat + half_lat;
+    int32_t qw = view_lon - half_lon, qe = view_lon + half_lon;
+
+    uint32_t t0 = millis();
+    view_level = gimg_pick_level(qs, qw, qn, qe);
+    view_feats = 0;
+    gimg_query(view_level, qs, qw, qn, qe, vmap_feature_cb, NULL);
+    uint32_t t_query = millis() - t0;
+
+    /* The recorded track on top of the map, solid and thick so it reads
+     * against the contour hatching. */
+    if (track.size() >= 2) {
+        static int32_t tl[64], tn[64];
+        size_t i = 0;
+        while (i < track.size()) {
+            int k = 0;
+            /* One point of overlap so consecutive runs join up. */
+            if (i) { tl[k] = (int32_t)(track[i - 1].lat * 1e7);
+                     tn[k] = (int32_t)(track[i - 1].lng * 1e7); k++; }
+            while (k < 64 && i < track.size()) {
+                tl[k] = (int32_t)(track[i].lat * 1e7);
+                tn[k] = (int32_t)(track[i].lng * 1e7);
+                k++; i++;
+            }
+            map_draw_track(tl, tn, k, 2);
+        }
+    }
+
+    if (has_fix)
+        map_draw_marker((int32_t)(cur_lat * 1e7), (int32_t)(cur_lng * 1e7), 4);
+
+    map_draw_centre_mark(3);
+    map_draw_north();          /* the "N" under it is drawn with the text below */
+
+    char sb[16] = "";
+    map_draw_scale_bar(sb, sizeof(sb));
+
+    lv_obj_invalidate(map_canvas);
+
+    /* Status strip under the canvas, drawn through LVGL because it is text. */
+    lv_draw_label_dsc_t ld;
+    lv_draw_label_dsc_init(&ld);
+    ld.color = lv_color_black();
+    ld.font = &lv_font_montserrat_14;
+
+    /* Scale and level only — the overview page already carries the position,
+     * and repeating it here just spent the strip twice. */
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s  L%d%s", sb[0] ? sb : "-", view_level,
+             view_locked ? "  GPS" : "");
+    lv_canvas_draw_text(map_canvas, 2, MAP_H + 1, MAP_W - 4, &ld, buf);
+    lv_canvas_draw_text(map_canvas, MAP_W - 15, 26, 14, &ld, "N");
+
+    Serial.printf("[MAP] L%d %d feat, %lu seg, query %lu ms\n",
+                  view_level, view_feats, map_draw_segments(),
+                  (unsigned long)t_query);
+}
+
+
+/* ---- map picker ---- */
+
+/* The on-screen controls route through the same handler as the keys, so the
+ * two can never drift apart. */
+static void map_ctrl_cb(lv_event_t *e)
+{
+    char key = (char)(intptr_t)lv_event_get_user_data(e);
+    if (vmap_key(key)) {
+        draw_vector_map();
+        ui_disp_full_refr();
+    }
+}
+
+static void pick_close(void)
+{
+    pick_open = false;
+    if (pick_ovl) lv_obj_add_flag(pick_ovl, LV_OBJ_FLAG_HIDDEN);
+    ui_disp_full_refr();
+}
+
+static void pick_choose_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= pick_count) return;
+
+    /* Remember the choice even if opening fails, so the message on the next
+     * try is about the same map rather than silently a different one. */
+    mapstore_set_default(pick_items[idx].name);
+    if (vmap_open_named(pick_items[idx].name)) {
+        pick_close();
+        if (gps_page == 1) draw_vector_map();
+        ui_disp_full_refr();
+    } else {
+        pick_refresh();          /* leave the list up with the error showing */
+        ui_disp_full_refr();
+    }
+}
+
+static void pick_refresh(void)
+{
+    if (!pick_list) return;
+    lv_obj_clean(pick_list);
+
+    pick_count = mapstore_list(pick_items, MAPSTORE_MAX);
+    if (pick_count <= 0) {
+        /* Tell the two apart: an unmounted card and an empty folder look the
+         * same in a list, and only one of them is fixed by copying files. */
+        lv_obj_t *b = lv_list_add_btn(pick_list, NULL,
+            pick_count < 0 ? "SD card not mounted.\nRe-seat it, or format FAT32\n(exFAT is not supported)."
+                           : "No maps.\nPut a .img in " MAPSTORE_DIR);
+        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        pick_count = 0;
+        return;
+    }
+
+    char cur[MAPSTORE_NAME_MAX];
+    mapstore_get_default(cur, sizeof(cur));
+
+    for (int i = 0; i < pick_count; i++) {
+        char label[96];
+        /* Say which zips still need unpacking: it is the difference between
+         * opening at once and waiting. */
+        snprintf(label, sizeof(label), "%s%s  %luMB%s",
+                 strcmp(cur, pick_items[i].name) == 0 ? LV_SYMBOL_OK " " : "",
+                 pick_items[i].name,
+                 (unsigned long)(pick_items[i].size / (1024 * 1024)),
+                 pick_items[i].is_zip
+                     ? (pick_items[i].unpacked ? " zip*" : " zip") : "");
+        lv_obj_t *b = lv_list_add_btn(pick_list, NULL, label);
+        lv_obj_add_event_cb(b, pick_choose_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
+static void pick_open_cb(lv_event_t *e)
+{
+    if (!pick_ovl) return;
+    pick_open = true;
+    lv_obj_clear_flag(pick_ovl, LV_OBJ_FLAG_HIDDEN);
+    pick_refresh();
+    if (pick_status)
+        lv_label_set_text(pick_status, vmap_ready ? gimg_describe() : "No map open");
+    ui_disp_full_refr();
+}
+
+static void map_btn_update(void)
+{
+    if (map_btn_lbl)
+        lv_label_set_text_fmt(map_btn_lbl, LV_SYMBOL_DIRECTORY " %s",
+                              vmap_name[0] ? vmap_name : "Select map");
+    if (map_ctr_lbl)
+        lv_label_set_text(map_ctr_lbl, map_draw_contours() ? "ctr on" : "ctr off");
+}
+
+/* w/a/s/d pan by a third of a screen, i/o zoom, g re-lock onto the fix. */
+static bool vmap_key(char c)
+{
+    if (!vmap_ready) return false;
+    int32_t step_lat = view_span / 3;
+    float coslat = cosf(view_lat / 1e7f * 0.017453293f);
+    if (coslat < 0.02f) coslat = 0.02f;
+    int32_t step_lon = (int32_t)(((int64_t)view_span * MAP_W / (MAP_H * 3)) / coslat);
+
+    switch (c) {
+    case 'w': case 'W': view_lat += step_lat; view_locked = false; break;
+    case 's': case 'S': view_lat -= step_lat; view_locked = false; break;
+    case 'a': case 'A': view_lon -= step_lon; view_locked = false; break;
+    case 'd': case 'D': view_lon += step_lon; view_locked = false; break;
+    case 'i': case 'I': view_span = view_span / 2 > 500 ? view_span / 2 : 500; break;
+    case 'o': case 'O': {
+        int32_t want = view_span < 400000000 ? view_span * 2 : view_span;
+        /* Refuse a zoom-out that would span more tiles than a redraw can read.
+         * Better a zoom limit than a redraw that never finishes. */
+        int32_t hl = want / 2;
+        float cl = cosf(view_lat / 1e7f * 0.017453293f);
+        if (cl < 0.02f) cl = 0.02f;
+        int32_t hn = (int32_t)(((int64_t)want * MAP_W / (MAP_H * 2)) / cl);
+        int nt = gimg_overlap_tiles(view_lat - hl, view_lon - hn,
+                                    view_lat + hl, view_lon + hn);
+        if (nt > VIEW_MAX_TILES) {
+            Serial.printf("[MAP] zoom-out refused: would span %d tiles\n", nt);
+            return true;                  /* redraw so the scale bar still shows */
+        }
+        view_span = want;
+        break;
+    }
+    case 'g': case 'G': view_locked = true; break;
+    case 'c': case 'C':
+        map_draw_set_contours(!map_draw_contours());
+        mapstore_set_contours(map_draw_contours());
+        map_btn_update();
+        break;
+    default: return false;
+    }
+
+    /* Wrap longitude rather than letting it run off, so panning across the
+     * antimeridian works — which is where this map happens to be. */
+    if (view_lon >  1800000000) view_lon -= 3600000000LL;
+    if (view_lon < -1800000000) view_lon += 3600000000LL;
+    if (view_lat >  900000000) view_lat =  900000000;
+    if (view_lat < -900000000) view_lat = -900000000;
+    return true;
+}
+
 static void draw_world_map()
 {
     if (!map_canvas) return;
@@ -160,7 +537,7 @@ static void draw_world_map()
     line_dsc.color = lv_color_black();
     line_dsc.width = 1;
 
-    lv_point_t border[] = {{0,0},{MAP_W-1,0},{MAP_W-1,MAP_H-1},{0,MAP_H-1},{0,0}};
+    lv_point_t border[] = {{0,0},{MAP_W-1,0},{MAP_W-1,WORLD_H-1},{0,WORLD_H-1},{0,0}};
     for (int i = 0; i < 4; i++) {
         lv_point_t pts[2] = {border[i], border[i+1]};
         lv_canvas_draw_line(map_canvas, pts, 2, &line_dsc);
@@ -169,9 +546,9 @@ static void draw_world_map()
     /* Draw coastlines */
     for (int i = 0; i < (int)COAST_SEGMENTS; i++) {
         int x1 = MAP_W * (coastline[i][1] + 180) / 360;
-        int y1 = MAP_H * (90 - coastline[i][0]) / 180;
+        int y1 = WORLD_H * (90 - coastline[i][0]) / 180;
         int x2 = MAP_W * (coastline[i][3] + 180) / 360;
-        int y2 = MAP_H * (90 - coastline[i][2]) / 180;
+        int y2 = WORLD_H * (90 - coastline[i][2]) / 180;
         /* Skip wrap-around segments */
         if (abs(x2 - x1) > MAP_W / 2) continue;
         lv_point_t pts[2] = {{(lv_coord_t)x1,(lv_coord_t)y1},{(lv_coord_t)x2,(lv_coord_t)y2}};
@@ -181,18 +558,18 @@ static void draw_world_map()
     /* Draw GPS position */
     if (has_fix) {
         int px = MAP_W * (cur_lng + 180) / 360;
-        int py = MAP_H * (90 - cur_lat) / 180;
+        int py = WORLD_H * (90 - cur_lat) / 180;
         /* Draw crosshair */
         for (int d = -4; d <= 4; d++) {
             if (px+d >= 0 && px+d < MAP_W) lv_canvas_set_px(map_canvas, px+d, py, lv_color_black());
-            if (py+d >= 0 && py+d < MAP_H) lv_canvas_set_px(map_canvas, px, py+d, lv_color_black());
+            if (py+d >= 0 && py+d < WORLD_H) lv_canvas_set_px(map_canvas, px, py+d, lv_color_black());
         }
         /* Thick cross */
         for (int d = -3; d <= 3; d++) {
             if (px+d >= 0 && px+d < MAP_W && py-1 >= 0) lv_canvas_set_px(map_canvas, px+d, py-1, lv_color_black());
-            if (px+d >= 0 && px+d < MAP_W && py+1 < MAP_H) lv_canvas_set_px(map_canvas, px+d, py+1, lv_color_black());
-            if (py+d >= 0 && py+d < MAP_H && px-1 >= 0) lv_canvas_set_px(map_canvas, px-1, py+d, lv_color_black());
-            if (py+d >= 0 && py+d < MAP_H && px+1 < MAP_W) lv_canvas_set_px(map_canvas, px+1, py+d, lv_color_black());
+            if (px+d >= 0 && px+d < MAP_W && py+1 < WORLD_H) lv_canvas_set_px(map_canvas, px+d, py+1, lv_color_black());
+            if (py+d >= 0 && py+d < WORLD_H && px-1 >= 0) lv_canvas_set_px(map_canvas, px-1, py+d, lv_color_black());
+            if (py+d >= 0 && py+d < WORLD_H && px+1 < MAP_W) lv_canvas_set_px(map_canvas, px+1, py+d, lv_color_black());
         }
     }
 
@@ -207,7 +584,7 @@ static void draw_world_map()
         snprintf(buf, sizeof(buf), "%.4f, %.4f", cur_lat, cur_lng);
     else
         snprintf(buf, sizeof(buf), "No fix");
-    lv_canvas_draw_text(map_canvas, 4, MAP_H + 4, MAP_W, &label_dsc, buf);
+    lv_canvas_draw_text(map_canvas, 4, WORLD_H + 4, MAP_W, &label_dsc, buf);
 }
 
 /* ---- Page 3: Tracker ---- */
@@ -638,7 +1015,7 @@ static void gps_update_cb(lv_timer_t *t)
     track_record_point();
 
     if (gps_page == 0) update_overview();
-    else if (gps_page == 1) draw_world_map();
+    else if (gps_page == 1) { if (vmap_ready) draw_vector_map(); else draw_world_map(); }
     else if (gps_page == 2) { draw_track(); update_track_info(); }
 }
 
@@ -651,11 +1028,20 @@ void gps_keyboard_poll()
     if (!keypad_get_val(&c)) return;
     keypad_set_flag();
 
+    if (pick_open) {
+        /* Any key closes the picker rather than paging out from under it. */
+        pick_close();
+        return;
+    }
+
     if (c == '\b') {
         if (gps_page > 0) show_gps_page(gps_page - 1);
         else { gps_kbd_active = false; scr_mgr_pop(false); }
     } else if (c == '\n' || c == ' ') {
         show_gps_page((gps_page + 1) % GPS_PAGE_COUNT);
+    } else if (gps_page == 1 && vmap_key(c)) {
+        draw_vector_map();            /* pan/zoom repaints immediately */
+        ui_disp_full_refr();
     } else if ((c == 's' || c == 'S') && gps_page == 2) {
         track_toggle();               /* shifted S counts too */
     }
@@ -699,12 +1085,90 @@ static void gps_create(lv_obj_t *parent)
 
     /* Page 1: World map */
     pages[1] = make_page(parent);
-    map_buf = (lv_color_t *)ps_calloc(MAP_W * (MAP_H + 30), sizeof(lv_color_t));
+    map_buf = (lv_color_t *)ps_calloc(MAP_W * (MAP_H + MAP_STATUS_H), sizeof(lv_color_t));
     if (map_buf) {
         map_canvas = lv_canvas_create(pages[1]);
-        lv_canvas_set_buffer(map_canvas, map_buf, MAP_W, MAP_H + 30, LV_IMG_CF_TRUE_COLOR);
+        lv_canvas_set_buffer(map_canvas, map_buf, MAP_W, MAP_H + MAP_STATUS_H, LV_IMG_CF_TRUE_COLOR);
         lv_obj_align(map_canvas, LV_ALIGN_TOP_MID, 0, 0);
     }
+
+    /* Map chooser. Lives in the bottom strip the page indicator otherwise
+     * occupies, rather than costing the map a row of its own — the indicator
+     * is hidden while this page is up, since the button says where you are
+     * just as well. */
+    map_btn = lv_btn_create(parent);
+    lv_obj_set_size(map_btn, 232, 26);
+    lv_obj_align(map_btn, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_add_flag(map_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *mbtn = map_btn;
+    lv_obj_set_style_radius(mbtn, 6, LV_PART_MAIN);
+    lv_obj_set_style_border_width(mbtn, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(mbtn, lv_color_white(), LV_PART_MAIN);
+    lv_obj_add_event_cb(mbtn, pick_open_cb, LV_EVENT_CLICKED, NULL);
+    /* Name and contour state as separate labels: the name is elided when it is
+     * long, and a status tacked onto the same string would be elided with it. */
+    map_btn_lbl = lv_label_create(mbtn);
+    lv_label_set_long_mode(map_btn_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(map_btn_lbl, 168);
+    lv_obj_align(map_btn_lbl, LV_ALIGN_LEFT_MID, 2, 0);
+    lv_obj_set_style_text_color(map_btn_lbl, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(map_btn_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_label_set_text(map_btn_lbl, LV_SYMBOL_DIRECTORY " Select map");
+
+    map_ctr_lbl = lv_label_create(mbtn);
+    lv_obj_align(map_ctr_lbl, LV_ALIGN_RIGHT_MID, -2, 0);
+    lv_obj_set_style_text_color(map_ctr_lbl, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(map_ctr_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_label_set_text(map_ctr_lbl, "");
+
+    /* Zoom and recentre, overlaid on the right edge of the map. The keys
+     * (i/o to zoom, wasd to pan, g to re-lock) still work, but nothing on
+     * screen said so. */
+    struct { const char *txt; int dy; char key; } mc[] = {
+        { LV_SYMBOL_PLUS,  4,   'i' },
+        { LV_SYMBOL_MINUS, 36,  'o' },
+        { LV_SYMBOL_GPS,   68,  'g' },
+    };
+    for (unsigned i = 0; i < sizeof(mc) / sizeof(mc[0]); i++) {
+        lv_obj_t *b = lv_btn_create(pages[1]);
+        lv_obj_set_size(b, 28, 28);
+        lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -6, mc[i].dy);
+        lv_obj_set_style_radius(b, 4, LV_PART_MAIN);
+        lv_obj_set_style_border_width(b, 1, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(b, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_add_event_cb(b, map_ctrl_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)mc[i].key);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, mc[i].txt);
+        lv_obj_set_style_text_color(l, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_center(l);
+    }
+
+    /* Picker overlay: created on the screen, not the page, so it covers the
+     * whole app area and a stray tap cannot reach the map behind it. */
+    pick_ovl = lv_obj_create(parent);
+    lv_obj_set_size(pick_ovl, 240, 292);
+    lv_obj_align(pick_ovl, LV_ALIGN_TOP_MID, 0, 28);
+    lv_obj_set_style_radius(pick_ovl, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(pick_ovl, 4, LV_PART_MAIN);
+    lv_obj_set_flex_flow(pick_ovl, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(pick_ovl, 4, LV_PART_MAIN);
+    lv_obj_clear_flag(pick_ovl, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(pick_ovl, LV_OBJ_FLAG_HIDDEN);
+
+    pick_list = lv_list_create(pick_ovl);
+    lv_obj_set_width(pick_list, lv_pct(100));
+    lv_obj_set_flex_grow(pick_list, 1);
+    lv_obj_set_style_pad_all(pick_list, 0, LV_PART_MAIN);
+
+    pick_status = lv_label_create(pick_ovl);
+    lv_obj_set_width(pick_status, lv_pct(100));
+    lv_label_set_long_mode(pick_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(pick_status, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(pick_status, lv_palette_main(LV_PALETTE_GREY), LV_PART_MAIN);
+    lv_label_set_text(pick_status, "");
 
     /* Page 2: Tracker */
     pages[2] = make_page(parent);
@@ -751,6 +1215,8 @@ static void gps_create(lv_obj_t *parent)
     lv_obj_center(dl);
 
     show_gps_page(0);
+    vmap_try_load();
+    map_btn_update();
     gps_timer = lv_timer_create(gps_update_cb, 3000, NULL);
     gps_kbd_active = true;
 }
@@ -775,11 +1241,16 @@ static void gps_destroy(void)
     tracking = false;
     if (gps_timer) { lv_timer_del(gps_timer); gps_timer = NULL; }
     lbl_overview = lbl_track_info = map_canvas = track_canvas = page_ind = NULL;
+    pick_ovl = pick_list = pick_status = map_btn = map_btn_lbl = map_ctr_lbl = NULL;
+    pick_open = false;
+    pick_count = 0;
     gpx_list = gpx_info = gpx_del_btn = NULL;
     gpx_count = 0;
     gpx_selected = -1;
     for (int i = 0; i < GPS_PAGE_COUNT; i++) pages[i] = NULL;
     if (map_buf) { free(map_buf); map_buf = NULL; }
+    if (vmap_ready) { gimg_close(); vmap_ready = false; }
+    vmap_tried = false;
     if (track_buf) { free(track_buf); track_buf = NULL; }
     track.clear();
 }

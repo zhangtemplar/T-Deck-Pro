@@ -60,6 +60,10 @@ void power_drop_lingering(void);
  * can switch off even rails a screen is still holding (WiFi in particular).
  * power_resume_all() brings back whatever is still referenced. */
 void power_suspend_all(void);
+
+/* True while any rail is still powered. Rails an app holds survive idling, so
+ * the idle clock has to stay high enough for whatever is still running. */
+bool power_any_rail_on(void);
 void power_resume_all(void);
 
 /* Bring WiFi up and block until associated (or timeout). Returns true when
