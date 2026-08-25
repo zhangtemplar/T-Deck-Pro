@@ -109,7 +109,7 @@ static void free_note(void)
     if (g_blocks) { free(g_blocks); g_blocks = NULL; }
     g_len = 0;
     g_nblocks = 0;
-    g_cur.blk = g_cur.line = 0;
+    g_cur.blk = 0; g_cur.off = 0;
     g_back_n = 0;
 }
 
@@ -117,7 +117,7 @@ static void reparse(void)
 {
     if (!g_blocks) g_blocks = (md_block_t *)ps_calloc(NT_MAX_BLOCKS, sizeof(md_block_t));
     g_nblocks = g_blocks ? md_parse(g_text, g_len, g_blocks, NT_MAX_BLOCKS) : 0;
-    g_cur.blk = g_cur.line = 0;
+    g_cur.blk = 0; g_cur.off = 0;
     g_back_n = 0;
 }
 
@@ -233,7 +233,7 @@ static void preview_next(void)
     nt_view(&v);
     md_cursor_t nxt = md_view_measure(&v, g_text, g_blocks, g_nblocks, g_cur);
     if (nxt.blk >= g_nblocks) return;                       /* already at the end */
-    if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) return;
+    if (nxt.blk == g_cur.blk && nxt.off == g_cur.off) return;
     if (g_back_n < (int)(sizeof(g_back) / sizeof(g_back[0]))) g_back[g_back_n++] = g_cur;
     g_cur = nxt;
     render_preview();

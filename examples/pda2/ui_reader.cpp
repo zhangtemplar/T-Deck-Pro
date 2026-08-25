@@ -288,7 +288,7 @@ static void free_book(void)
     g_len = 0;
     g_stack_n = 0;
     g_nblocks = 0;
-    g_cur.blk = g_cur.line = 0;
+    g_cur.blk = 0; g_cur.off = 0;
     g_md_back_n = 0;
     g_is_md = false;
     g_is_epub = false;
@@ -300,6 +300,11 @@ static bool load_chapter(int idx)
 {
     if (!g_is_epub || idx < 0 || idx >= g_epub.nchap) return false;
 
+    /* Logged before each phase, not after. When this stalled previously the
+     * serial output simply stopped, which said nothing about where. */
+    uint32_t t0 = millis();
+    Serial.printf("[READ] ch%d: unzip...\n", idx + 1);
+
     uint8_t *xml = NULL;
     size_t xlen = 0;
     if (epub_chapter(&g_epub, idx, &xml, &xlen) != 0) {
@@ -307,18 +312,26 @@ static bool load_chapter(int idx)
         return false;
     }
 
+    uint32_t t_unzip = millis() - t0;
+    Serial.printf("[READ] ch%d: %u bytes xhtml in %lu ms, parsing...\n",
+                  idx + 1, (unsigned)xlen, (unsigned long)t_unzip);
+
+    t0 = millis();
     g_nblocks = xhtml_to_blocks((const char *)xml, xlen,
                                 g_text, RD_MAX_CHAP_TEXT, &g_len,
                                 g_blocks, RD_MAX_BLOCKS);
+    uint32_t t_parse = millis() - t0;
     free(xml);
 
     g_chapter = idx;
-    g_cur.blk = g_cur.line = 0;
+    g_cur.blk = 0; g_cur.off = 0;
     g_md_back_n = 0;
 
     bool truncated = (g_nblocks >= RD_MAX_BLOCKS) || (g_len >= RD_MAX_CHAP_TEXT - 1);
-    Serial.printf("[READ] chapter %d/%d: %d blocks, %u bytes%s\n",
+    Serial.printf("[READ] chapter %d/%d: %d blocks, %u bytes, "
+                  "unzip %lu ms + parse %lu ms%s\n",
                   idx + 1, g_epub.nchap, g_nblocks, (unsigned)g_len,
+                  (unsigned long)t_unzip, (unsigned long)t_parse,
                   truncated ? "  (TRUNCATED)" : "");
     if (truncated && status_label)
         lv_label_set_text(status_label, "Chapter too large - truncated");
@@ -402,7 +415,7 @@ static bool load_epub(const char *path)
 
     /* Land on the block at or after the saved offset within that chapter. */
     for (int i = 0; i < g_nblocks; i++) {
-        if (g_blocks[i].off >= saved_off) { g_cur.blk = i; break; }
+        if (g_blocks[i].off >= saved_off) { g_cur.blk = i; g_cur.off = 0; break; }
     }
 
     lv_mem_monitor_t mon;
@@ -483,9 +496,9 @@ static bool load_book(const char *path)
              * the offset is past every block (the book was read to the end),
              * land on the last one rather than silently restarting. */
             g_cur.blk = (g_nblocks > 0) ? g_nblocks - 1 : 0;
-            g_cur.line = 0;
+            g_cur.off = 0;
             for (int i = 0; i < g_nblocks; i++) {
-                if (g_blocks[i].off >= g_pos) { g_cur.blk = i; break; }
+                if (g_blocks[i].off >= g_pos) { g_cur.blk = i; g_cur.off = 0; break; }
             }
             g_md_back_n = 0;
         }
@@ -528,7 +541,7 @@ static void next_page(void)
             }
             return;
         }
-        if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) return;
+        if (nxt.blk == g_cur.blk && nxt.off == g_cur.off) return;
         if (g_md_back_n < (int)(sizeof(g_md_back) / sizeof(g_md_back[0])))
             g_md_back[g_md_back_n++] = g_cur;
         g_cur = nxt;
@@ -563,14 +576,20 @@ static void prev_page(void)
         if (g_is_epub && g_chapter > 0 && load_chapter(g_chapter - 1)) {
             md_view_t v;
             rd_view(&v);
+            uint32_t tw = millis();
+            int pages = 0;
+            Serial.printf("[READ] walking ch%d to its last page...\n", g_chapter + 1);
             for (int guard = 0; guard < 4096; guard++) {
+                pages++;
                 md_cursor_t nxt = md_view_measure(&v, g_text, g_blocks, g_nblocks, g_cur);
                 if (nxt.blk >= g_nblocks) break;            /* g_cur is the last page */
-                if (nxt.blk == g_cur.blk && nxt.line == g_cur.line) break;
+                if (nxt.blk == g_cur.blk && nxt.off == g_cur.off) break;
                 if (g_md_back_n < (int)(sizeof(g_md_back) / sizeof(g_md_back[0])))
                     g_md_back[g_md_back_n++] = g_cur;
                 g_cur = nxt;
             }
+            Serial.printf("[READ] walked %d pages in %lu ms\n",
+                          pages, (unsigned long)(millis() - tw));
             render_page();
         }
         return;
@@ -632,6 +651,8 @@ static void render_page(void)
 
         md_view_t v;
         rd_view(&v);
+        Serial.printf("[READ] draw ch%d blk%d+%u...\n",
+                      g_chapter + 1, g_cur.blk, (unsigned)g_cur.off);
         uint32_t t0 = millis();
         md_view_render(&v, g_text, g_blocks, g_nblocks, g_cur);
         uint32_t t_draw = millis() - t0;

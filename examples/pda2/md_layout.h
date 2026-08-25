@@ -10,6 +10,7 @@
 #ifndef __MD_LAYOUT_H__
 #define __MD_LAYOUT_H__
 
+#include <stdint.h>
 #include "md_parse.h"
 #include "text_layout.h"
 
@@ -17,10 +18,17 @@
 extern "C" {
 #endif
 
-/* Where rendering is up to: a block, and the wrapped line within it. */
+/* Where rendering is up to: a block, and the byte offset within that block's
+ * stripped text where the next page begins.
+ *
+ * A byte offset rather than a line index because resuming has to be O(1).
+ * Indexing by line meant md_layout_page re-wrapped the block from its start
+ * and threw away every line before the cursor — fine for a paragraph, but a
+ * chapter that is one long block turned paging into quadratic work, and
+ * stepping back across a chapter boundary walks every page of it. */
 typedef struct {
-    int blk;
-    int line;
+    int      blk;
+    uint32_t off;
 } md_cursor_t;
 
 typedef struct {

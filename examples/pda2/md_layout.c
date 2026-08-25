@@ -17,10 +17,9 @@ md_cursor_t md_layout_page(const char *text,
     int y = 0;
     int row = 0;
     int blk = cur.blk;
-    int line_in_blk = cur.line;
+    uint32_t start_off = cur.off;
 
     if (blk < 0) blk = 0;
-    if (line_in_blk < 0) line_in_blk = 0;
 
     while (blk < nblocks && row < env->max_rows) {
         const md_block_t *b = &blocks[blk];
@@ -34,7 +33,7 @@ md_cursor_t md_layout_page(const char *text,
             if (y + h > env->view_h && row > 0) break;
             y += h;
             blk++;
-            line_in_blk = 0;
+            start_off = 0;
             continue;
         }
 
@@ -44,7 +43,7 @@ md_cursor_t md_layout_page(const char *text,
             row++;
             y += RULE_HEIGHT;
             blk++;
-            line_in_blk = 0;
+            start_off = 0;
             continue;
         }
 
@@ -79,27 +78,28 @@ md_cursor_t md_layout_page(const char *text,
             row++;
             y += lh;
             blk++;
-            line_in_blk = 0;
+            start_off = 0;
             continue;
         }
 
-        size_t pos = 0;
-        int idx = 0;
+        /* Resume exactly where the last page stopped. `idx` only distinguishes
+         * the block's first row (bullets and numbers are drawn on it), so a
+         * mid-block resume starts at 1. */
+        size_t pos = start_off < clen ? start_off : 0;
+        int idx = pos ? 1 : 0;
         while (pos < clen) {
             uint16_t ll = 0;
             size_t next = txt_layout_line(env->scratch, clen, pos, &lay, &ll);
 
-            if (idx >= line_in_blk) {
-                /* Row 0 of a page always fits, which is what guarantees the
-                 * cursor advances even for an oversized font. */
-                if (row > 0 && (y + lh > env->view_h || row >= env->max_rows)) {
-                    md_cursor_t nxt = { blk, idx };
-                    return nxt;
-                }
-                if (emit) emit(user, b, idx, env->scratch + pos, ll, indent, y, font);
-                row++;
-                y += lh;
+            /* Row 0 of a page always fits, which is what guarantees the
+             * cursor advances even for an oversized font. */
+            if (row > 0 && (y + lh > env->view_h || row >= env->max_rows)) {
+                md_cursor_t nxt = { blk, (uint32_t)pos };
+                return nxt;
             }
+            if (emit) emit(user, b, idx, env->scratch + pos, ll, indent, y, font);
+            row++;
+            y += lh;
 
             idx++;
             if (next == pos) break;
@@ -107,7 +107,7 @@ md_cursor_t md_layout_page(const char *text,
         }
 
         blk++;
-        line_in_blk = 0;
+        start_off = 0;
     }
 
     md_cursor_t nxt = { blk, 0 };
