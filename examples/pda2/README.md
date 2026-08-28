@@ -1,14 +1,11 @@
 # PDA2 — a PDA firmware for the LilyGo T-Deck Pro
 
-An offline-first PDA firmware for the **LilyGo T-Deck Pro v1.1**: reader, dictionary, vector maps, notes, weather, world clock, GPS tracker and more, on a 240×320 monochrome e-paper screen with a hardware keyboard.
+An offline-first PDA firmware for the **LilyGo T-Deck Pro v1.1**: reader, dictionary, vector maps, notes, weather, world clock, GPS tracker and more, on a 240×320 monochrome e-paper screen with a hardware keyboard. **All written by Claude**
 
 Built on top of LilyGo's factory example, which supplies the proven hardware drivers (e-paper, touch, keypad, GPS, LoRa, power management), with the PDA apps layered on top.
 
-> **Photo placeholder** — the device running this firmware
-> `docs/img/device.jpg`
->
-> **Screenshot placeholder** — home screen, app grid (page 1)
-> `docs/img/home.png`
+![the device running this firmware](docs/img/device.bmp)
+![home screen, app grid (page 1)](docs/img/home.bmp)
 
 ---
 
@@ -126,7 +123,7 @@ Directories are created on demand where the app writes; you only need to create 
 
 ### CJK fonts
 
-Chinese, Japanese and Korean glyphs are **pre-rasterized offline**. Rendering TTF glyphs at runtime takes 1–2 seconds *each* on this MCU — a screen of Chinese took minutes — so the glyphs are baked into a flat bitmap blob loaded into PSRAM at boot.
+Chinese, Japanese and Korean glyphs are **pre-rasterized offline**. Rendering TTF glyphs at runtime takes 1–2 seconds *each* on this MCU — a screen of Chinese took minutes — so the glyphs are baked into a flat bitmap blob loaded into PSRAM at boot. You could got TTF fonts from [Google fonts](https://fonts.google.com/noto/specimen/Noto+Sans+SC)
 
 ```bash
 python3 tools/rasterize_cjk_font.py \
@@ -156,18 +153,20 @@ The map viewer reads **classic (unencrypted) Garmin `.img` files** — the forma
 
 **First open builds an index** of every tile in the file, which for a multi-gigabyte map takes a while and reports progress on serial. The result is cached in a `.tdx` sidecar next to the map, so every open after that is roughly a second.
 
-> **Screenshot placeholder** — the map chooser, listing what is in `/maps`
-> `docs/img/map-picker.png`
+![the map chooser, listing what is in `/maps`](docs/img/gps-map-select.bmp)
 
 ### Dictionaries
 
-Put **StarDict** dictionaries in `/stardict/` (the `.ifo`, `.idx` and `.dict`/`.dict.dz` files together). Several dictionaries can be installed at once; the Dictionary app's gear button chooses which take part in lookups.
+Put **StarDict** dictionaries in `/stardict/` (the `.ifo`, `.idx` and `.dict`/`.dict.dz` files together). Several dictionaries can be installed at once; the Dictionary app's gear button chooses which take part in lookups. You could got dictionaries from [dioxionary](https://github.com/vaaandark/dioxionary)
 
 Indexes for enabled dictionaries are loaded into PSRAM when the app opens — a multi-megabyte read from SD — so the first lookup is instant rather than stalling for seconds.
 
 ### Books
 
 Copy `.epub`, `.md` or `.txt` files to `/books/`. EPUBs must be unencrypted; DRM-protected files are detected and reported.
+
+![the map chooser, listing what is in `/maps`](docs/img/reader.bmp)
+
 
 ---
 
@@ -203,14 +202,10 @@ Zooming out is refused when the view would span more tiles than a redraw can rea
 
 **Recording a track** holds the GPS powered and keeps the CPU at full speed even with no input, so a recording doesn't die when the device would otherwise idle. Tracks are written to `/gpx/` as standard GPX and can be listed and deleted on page 4.
 
-> **Screenshot placeholder** — GPS overview page (position, satellites, time)
-> `docs/img/gps.png`
->
-> **Screenshot placeholder** — map page: contours, scale bar, north arrow, position marker
-> `docs/img/map.png`
->
-> **Screenshot placeholder** — tracker page part-way through a recording
-> `docs/img/gps-track.png`
+![GPS overview page (position, satellites, time)](docs/img/gps.bmp)
+![map page: contours, scale bar, north arrow, position marker](docs/img/map.bmp)
+![ tracker page part-way through a recording](docs/img/gps-track.bmp)
+![ tracker page part-way through a recording](docs/img/gpx.bmp)
 
 ### Reader
 
@@ -226,8 +221,7 @@ EPUB support is deliberately narrow: no images (alt text is shown instead), a si
 
 Your position is remembered per file, so closing a book and coming back returns to the same page.
 
-> **Screenshot placeholder** — reader showing an EPUB chapter
-> `docs/img/reader.png`
+![ reader showing an EPUB chapter](docs/img/epub.bmp)
 
 ### Dictionary
 
@@ -239,21 +233,18 @@ Type a word and press **Enter**. Every enabled dictionary that has the word cont
 
 If nothing offline matches, it suggests near spellings, then tries an online lookup if WiFi is available.
 
-> **Screenshot placeholder** — a lookup with results from two dictionaries
-> `docs/img/dict.png`
->
-> **Screenshot placeholder** — the dictionary chooser (gear button)
-> `docs/img/dict-select.png`
+
+![a lookup with results from two dictionaries](docs/img/dict.bmp)
+![ the dictionary chooser (gear button)](docs/img/dict-select.bmp)
 
 ### Weather
 
 Three pages: current conditions, 12-hour forecast, 8-day forecast. Tap the city name to change location — type to search from the built-in city database, or choose **Use GPS location** to follow your position again. Results are cached for an hour.
 
-> **Screenshot placeholder** — current conditions
-> `docs/img/weather.png`
->
-> **Screenshot placeholder** — the city typeahead, part-way through a search
-> `docs/img/weather-city.png`
+![  current conditions](docs/img/weather.bmp)
+![  current conditions](docs/img/weather-hourly.bmp)
+![  current conditions](docs/img/weather-daily.bmp)
+![ the city typeahead, part-way through a search](docs/img/weather-city.bmp)
 
 ### World clock
 
@@ -261,11 +252,9 @@ Up to six cities at once. Page 2 has a world map for browsing by timezone plus a
 
 Both this and the weather app read from one shared city database (229 cities with coordinates and POSIX timezone rules), generated by `tools/gen_city_db.py` from `tools/cities.txt`.
 
-> **Screenshot placeholder** — six cities on page 1
-> `docs/img/clocks.png`
->
-> **Screenshot placeholder** — page 2, world map timezone picker
-> `docs/img/clocks-map.png`
+![  six cities on page 1](docs/img/clock.bmp)
+![  page 2, world map timezone picker](docs/img/clock-city.bmp)
+![  page 2, world map timezone picker](docs/img/clock-city-select.bmp)
 
 ### Notes
 
@@ -280,8 +269,7 @@ Markdown notes in `/notes/`, with an edit page and a rendered preview.
 
 While editing, every key goes into the text; backspace deletes and Enter saves and leaves.
 
-> **Screenshot placeholder** — a note in preview, showing rendered Markdown
-> `docs/img/notes.png`
+![   a note in preview, showing rendered Markdown](docs/img/note.bmp)
 
 ### Image viewer
 
@@ -293,26 +281,28 @@ PNG, JPEG and BMP from `/images/`, converted to grayscale then dithered to black
 | `i` / `o` | zoom |
 | `n` / `m` | previous / next image |
 
-> **Screenshot placeholder** — a photograph dithered to black and white
-> `docs/img/images.png`
+![   a photograph dithered to black and white](docs/img/image.bmp)
 
 ### Files
 
 Starts a web server on the device's WiFi address. Browse the SD card from a laptop, download files, upload new ones, create and delete folders. The app shows the URL to open.
 
-> **Screenshot placeholder** — file server in a browser
-> `docs/img/files.png`
+![   file server in a browser](docs/img/file.bmp)
+![   file server in a browser](docs/img/file_viewer.png)
 
 ### Others
 
 - **Calculator** — scientific, with full operator precedence, `sin`/`cos`/`tan`/`log`/`sqrt`/`exp`/factorial.
+![   file server in a browser](docs/img/calc.bmp)
 - **Calendar** — month view; `a`/`d` change month, optional public holidays.
-
-> **Screenshot placeholder** — calculator and calendar, side by side in one image
-> `docs/img/misc.png`
+![   file server in a browser](docs/img/calendar.bmp)
+![   file server in a browser](docs/img/calendar_holiday.bmp)
 - **AI Chat** — conversation with Gemini over WiFi.
+![   file server in a browser](docs/img/voice_ai.bmp)
 - **Recorder** — records to `/recordings/`; `+`/`-` adjust volume on playback.
+![   file server in a browser](docs/img/recorder.bmp)
 - **Music** — plays audio from `/music/` through the PCM5102A.
+![   file server in a browser](docs/img/music.bmp)
 - **Hardware pages** — LoRa, WiFi, Settings, Test, Battery, Input, A7682E, Motor.
 
 ### Power behaviour
