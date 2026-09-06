@@ -13,6 +13,7 @@
 #include "peripheral.h"
 #include "power_mgr.h"
 #include "config_keys.h"
+#include "app_config.h"
 #include "http_utils.h"
 #endif
 
@@ -99,16 +100,17 @@ static bool clock_is_set(struct tm *out)
     return (out->tm_year + 1900) >= 2024;
 }
 
-#ifdef UBLOX_ASSISTNOW_TOKEN
 /* Full ephemeris from u-blox AssistNow Online. The response is already a
  * stream of UBX-MGA messages, so it goes straight at the receiver. */
 static void assistnow_fetch(void)
 {
+    if (!cfg_has(CFG_ASSISTNOW_TOKEN)) return;
+
     char url[256];
     snprintf(url, sizeof(url),
              "https://online-live1.services.u-blox.com/GetOnlineData.ashx"
              "?token=%s&gnss=gps,glo&datatype=eph,alm,aux",
-             UBLOX_ASSISTNOW_TOKEN);
+             cfg_get(CFG_ASSISTNOW_TOKEN));
 
     http_response_t r = http_get(url, 10000);
     if (!r.success || r.body.empty()) {
@@ -119,19 +121,14 @@ static void assistnow_fetch(void)
     SerialGPS.flush();
     Serial.printf("[AGPS] AssistNow: injected %u bytes\n", (unsigned)r.body.size());
 }
-#endif
 
 void gps_assist_apply(void)
 {
     struct tm tm;
     bool have_clock = clock_is_set(&tm);
 
-    /* WiFi only earns its power here if it can supply something we lack. */
-#ifdef UBLOX_ASSISTNOW_TOKEN
-    bool want_wifi = true;
-#else
-    bool want_wifi = !have_clock;
-#endif
+    /* WiFi earns its power here only if it can supply something we lack. */
+    bool want_wifi = !have_clock || cfg_has(CFG_ASSISTNOW_TOKEN);
     bool wifi_held = false;
 
     if (want_wifi) {
@@ -177,9 +174,7 @@ void gps_assist_apply(void)
         Serial.println("[AGPS] no cached position, skipping position aiding");
     }
 
-#ifdef UBLOX_ASSISTNOW_TOKEN
     if (wifi_held) assistnow_fetch();
-#endif
 
     SerialGPS.flush();
     if (want_wifi) power_release(PWR_WIFI);

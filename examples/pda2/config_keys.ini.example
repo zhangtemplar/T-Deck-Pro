@@ -1,0 +1,32 @@
+# /config_keys.ini  —  settings read from the SD card at boot.
+#
+# Copy this to the ROOT of the card as "config_keys.ini" and fill in what you
+# need. Anything left out keeps whatever was compiled into the firmware via
+# config_keys.h, so you can set only the values you want to change.
+#
+# Keys are case-insensitive, so WIFI_SSID and wifi_ssid both work. Quote a
+# value if it has meaningful leading or trailing spaces.
+#
+# This file holds credentials. The file server refuses to list, serve or
+# delete it, but anyone holding the card can read it — treat it accordingly.
+
+# --- WiFi: needed by Weather, AI Chat, Files, holidays and time sync ---
+wifi_ssid              = my-network
+wifi_password          = my-password
+
+# --- OpenWeatherMap: Weather app (One Call API 3.0) ---
+# https://openweathermap.org/api
+owm_api_key            =
+
+# --- Google Gemini: AI Chat ---
+# https://aistudio.google.com/
+gemini_api_key         =
+
+# --- Calendarific: public holidays in Calendar ---
+# https://calendarific.com/
+calendarific_api_key   =
+# Comma-separated ISO country codes, up to 8.
+calendar_countries     = US,CN
+
+# --- u-blox AssistNow: faster first GPS fix (optional) ---
+ublox_assistnow_token  =

@@ -4,6 +4,7 @@
  */
 #include "lunar_calendar.h"
 #include "config_keys.h"
+#include "app_config.h"
 #include <string.h>
 
 #ifdef ARDUINO
@@ -245,7 +246,7 @@ static void parse_calendarific(const char *json)
 
 void holidays_fetch_api(int year, int month)
 {
-#if defined(CALENDARIFIC_API_KEY)
+    if (!cfg_has(CFG_CALENDARIFIC_KEY)) return;
     if (api_fetched && api_cached_year == year && api_cached_month == month) return;
 
     load_api_cache(year, month);
@@ -257,14 +258,35 @@ void holidays_fetch_api(int year, int month)
     }
 
     api_cache_count = 0;
-    const char *countries[] = { CALENDAR_COUNTRIES };
-    int num_countries = sizeof(countries) / sizeof(countries[0]);
+
+    /* Comma-separated in the .ini ("US,CN") so it can be edited on the card;
+     * the compile-time CALENDAR_COUNTRIES stays a braced list of quoted
+     * strings, so it is flattened to the same form here. */
+    char clist[96];
+#ifdef CALENDAR_COUNTRIES
+    {
+        const char *tmp[] = { CALENDAR_COUNTRIES };
+        size_t pos = 0;
+        for (size_t i = 0; i < sizeof(tmp) / sizeof(tmp[0]); i++)
+            pos += snprintf(clist + pos, sizeof(clist) - pos, "%s%s", i ? "," : "", tmp[i]);
+    }
+#else
+    clist[0] = '\0';
+#endif
+    if (cfg_source(CFG_CALENDAR_COUNTRY)[0] == 's')      /* "sd" wins */
+        snprintf(clist, sizeof(clist), "%s", cfg_get(CFG_CALENDAR_COUNTRY));
+    if (!clist[0]) snprintf(clist, sizeof(clist), "US");
+
+    const char *countries[8];
+    int num_countries = 0;
+    for (char *tok = strtok(clist, ", "); tok && num_countries < 8; tok = strtok(NULL, ", "))
+        countries[num_countries++] = tok;
 
     for (int c = 0; c < num_countries && api_cache_count < API_CACHE_MAX; c++) {
         char url[320];
         snprintf(url, sizeof(url),
                  "https://calendarific.com/api/v2/holidays?api_key=%s&country=%s&year=%d&month=%d&type=national",
-                 CALENDARIFIC_API_KEY, countries[c], year, month);
+                 cfg_get(CFG_CALENDARIFIC_KEY), countries[c], year, month);
 
         Serial.printf("[Holiday] Fetching %s/%d/%d...\n", countries[c], year, month);
         http_response_t resp = http_get(url, 15000);
@@ -282,10 +304,6 @@ void holidays_fetch_api(int year, int month)
         api_fetched = true;
         save_api_cache(year, month);
     }
-#else
-    (void)year;
-    (void)month;
-#endif
 }
 
 static int get_api_holidays(int year, int month, int *days, const char **names, int max_out)

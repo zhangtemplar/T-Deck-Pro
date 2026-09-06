@@ -11,6 +11,7 @@
 #include "cjk_font.h"
 #include "http_utils.h"
 #include "config_keys.h"
+#include "app_config.h"
 #include <cJSON.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -259,11 +260,11 @@ static bool cache_is_fresh()
 
 static void fetch_city_name(float lat, float lon)
 {
-#ifdef OWM_API_KEY
+    if (!cfg_has(CFG_OWM_KEY)) return;
     char url[256];
     snprintf(url, sizeof(url),
              "https://api.openweathermap.org/geo/1.0/reverse?lat=%.4f&lon=%.4f&limit=1&appid=%s",
-             lat, lon, OWM_API_KEY);
+             lat, lon, cfg_get(CFG_OWM_KEY));
     http_response_t resp = http_get(url, 5000);
     if (resp.success) {
         cJSON *arr = cJSON_Parse(resp.body.c_str());
@@ -274,7 +275,6 @@ static void fetch_city_name(float lat, float lon)
         }
         if (arr) cJSON_Delete(arr);
     }
-#endif
 }
 
 /* The city the user picked, if any. Stored by name plus coordinates so a
@@ -323,7 +323,6 @@ static void invalidate_cache(void);
 
 static void weather_fetch_task(void *param)
 {
-#ifdef OWM_API_KEY
     float lat = 37.49f, lon = -122.27f;
     const char *loc_source = "fallback";
 
@@ -366,7 +365,7 @@ static void weather_fetch_task(void *param)
     char url[256];
     snprintf(url, sizeof(url),
              "https://api.openweathermap.org/data/3.0/onecall?lat=%.4f&lon=%.4f&exclude=minutely,alerts&units=metric&appid=%s",
-             lat, lon, OWM_API_KEY);
+             lat, lon, cfg_get(CFG_OWM_KEY));
 
     http_response_t resp = http_get(url, 15000);
     if (resp.success) {
@@ -376,14 +375,17 @@ static void weather_fetch_task(void *param)
 
     if (data_valid && location_name[0] == '\0') fetch_city_name(lat, lon);
     if (data_valid) save_cache();
-#endif
     fetch_task = NULL;
     vTaskDelete(NULL);
 }
 
 static void start_fetch()
 {
-#ifdef OWM_API_KEY
+    if (!cfg_has(CFG_OWM_KEY)) {
+        if (status_label)
+            lv_label_set_text(status_label, "No API key.\nSet owm_api_key in\n/config_keys.ini");
+        return;
+    }
     if (WiFi.status() != WL_CONNECTED) {
         if (status_label) lv_label_set_text(status_label, "WiFi not connected");
         return;
@@ -392,9 +394,6 @@ static void start_fetch()
     if (cache_is_fresh()) return;
     if (status_label) lv_label_set_text(status_label, "Fetching...");
     xTaskCreatePinnedToCore(weather_fetch_task, "weather", 16384, NULL, 5, &fetch_task, 0);
-#else
-    if (status_label) lv_label_set_text(status_label, "No API key.\nSet OWM_API_KEY in config_keys.h");
-#endif
 }
 
 // --- UI update ---

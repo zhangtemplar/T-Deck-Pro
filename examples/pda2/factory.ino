@@ -22,6 +22,7 @@
 #include "ui_deckpro_port.h"
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include "factory.h"
+#include "app_config.h"
 #include "peripheral.h"
 #include <Preferences.h>
 #include <WiFi.h>
@@ -790,6 +791,10 @@ void setup()
     peri_init_st[E_PERI_BQ25896]    = bq25896_init();
     peri_init_st[E_PERI_BQ27220]    = bq27220_init();
     peri_init_st[E_PERI_SD]         = sd_care_init();
+
+    /* Settings from the card, if any, override the ones compiled in. Must come
+     * after the card mounts and before anything reads a credential. */
+    cfg_load();
     peri_init_st[E_PERI_GPS]        = gps_init();
     peri_init_st[E_PERI_BHI260AP]   = BHI260AP_init();
     peri_init_st[E_PERI_A7682E]     = A7682E_init();

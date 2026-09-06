@@ -10,6 +10,7 @@
 #include "config_keys.h"
 #include "gps_assist.h"
 #include "gps_dbd.h"
+#include "app_config.h"
 
 static int s_refs[PWR_RAIL_COUNT];
 static bool s_on[PWR_RAIL_COUNT];
@@ -44,17 +45,18 @@ static bool rail_on(pwr_rail_t rail)
 {
     switch (rail) {
     case PWR_WIFI:
-#if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
+        if (!cfg_has(CFG_WIFI_SSID)) {
+            Serial.println("[PWR] no WiFi network configured "
+                           "(set wifi_ssid in " CFG_PATH " or config_keys.h)");
+            return false;
+        }
         WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(true);
         /* Modem sleep: the radio naps between DTIM beacons while associated,
          * which is most of the saving available without disconnecting. */
         WiFi.setSleep(true);
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        WiFi.begin(cfg_get(CFG_WIFI_SSID), cfg_get(CFG_WIFI_PASSWORD));
         return true;
-#else
-        return false;
-#endif
 
     case PWR_GPS:
         digitalWrite(BOARD_GPS_EN, HIGH);

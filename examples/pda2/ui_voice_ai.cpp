@@ -11,6 +11,7 @@
 #include "gemini_api.h"
 #include "pdm_recorder.h"
 #include "config_keys.h"
+#include "app_config.h"
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <freertos/queue.h>
@@ -140,11 +141,17 @@ static void ui_timer_cb(lv_timer_t *t)
 static void ai_text_task(void *param)
 {
     char *prompt = (char *)param;
-#ifdef GEMINI_API_KEY
+    if (!cfg_has(CFG_GEMINI_KEY)) {
+        ui_post(UI_MSG_APPEND, "Set gemini_api_key in /config_keys.ini");
+        free(prompt);
+        ai_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     Serial.printf("[VoiceAI] prompt: %s\n", prompt);
     ui_post(UI_MSG_STATUS, "Waiting for Gemini...");
 
-    gemini_response_t resp = gemini_send_text(prompt, GEMINI_API_KEY);
+    gemini_response_t resp = gemini_send_text(prompt, cfg_get(CFG_GEMINI_KEY));
     if (resp.success) {
         if (last_response) free(last_response);
         last_response = strdup(resp.text.c_str());
@@ -156,9 +163,6 @@ static void ai_text_task(void *param)
         ui_post(UI_MSG_APPEND, buf);
         ui_post(UI_MSG_STATUS, "V:voice Enter:text");
     }
-#else
-    ui_post(UI_MSG_APPEND, "Set GEMINI_API_KEY in config_keys.h");
-#endif
     free(prompt);
     ai_task = NULL;
     vTaskDelete(NULL);
@@ -166,7 +170,12 @@ static void ai_text_task(void *param)
 
 static void ai_voice_task(void *param)
 {
-#ifdef GEMINI_API_KEY
+    if (!cfg_has(CFG_GEMINI_KEY)) {
+        ui_post(UI_MSG_APPEND, "Set gemini_api_key in /config_keys.ini");
+        ai_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     ui_post(UI_MSG_STATUS, "Recording 5 sec...");
     ui_post(UI_MSG_APPEND, "> [Voice recording]");
 
@@ -177,7 +186,7 @@ static void ai_voice_task(void *param)
 
     if (ok && wav && wav_len > 0) {
         ui_post(UI_MSG_STATUS, "Sending to Gemini...");
-        gemini_response_t resp = gemini_send_audio(wav, wav_len, GEMINI_API_KEY);
+        gemini_response_t resp = gemini_send_audio(wav, wav_len, cfg_get(CFG_GEMINI_KEY));
         free(wav);
 
         if (resp.success) {
@@ -196,9 +205,6 @@ static void ai_voice_task(void *param)
         ui_post(UI_MSG_APPEND, "Recording failed");
         ui_post(UI_MSG_STATUS, "V:voice Enter:text");
     }
-#else
-    ui_post(UI_MSG_APPEND, "Set GEMINI_API_KEY in config_keys.h");
-#endif
     ai_task = NULL;
     vTaskDelete(NULL);
 }
@@ -378,11 +384,10 @@ static void ai_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(response_label, &lv_font_montserrat_14, LV_PART_MAIN);
     lv_label_set_long_mode(response_label, LV_LABEL_LONG_WRAP);
 
-#ifdef GEMINI_API_KEY
-    lv_label_set_text(response_label, "Enter: send text\nV: voice (5s record)\nR: read last response");
-#else
-    lv_label_set_text(response_label, "Set GEMINI_API_KEY\nin config_keys.h");
-#endif
+    lv_label_set_text(response_label,
+                      cfg_has(CFG_GEMINI_KEY)
+                          ? "Enter: send text\nV: voice (5s record)\nR: read last response"
+                          : "Set gemini_api_key\nin /config_keys.ini");
 
     /* Status line */
     status_label = lv_label_create(cont);

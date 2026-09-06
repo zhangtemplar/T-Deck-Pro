@@ -22,6 +22,8 @@ Built on top of LilyGo's factory example, which supplies the proven hardware dri
   - [Books](#books)
 - [User guide](#user-guide)
 - [Development notes](#development-notes)
+  - [Adding a setting](#adding-a-setting)
+  - [Known gaps](#known-gaps)
 
 ---
 
@@ -84,22 +86,47 @@ To build a different example, change `src_dir` in `platformio.ini`.
 
 ### API keys and WiFi
 
-Copy the template and fill in what you need:
+There are two ways to set these, and you can mix them.
+
+**On the SD card** (no rebuild needed) — copy `config_keys.ini.example` to the
+root of the card as `config_keys.ini` and edit it there:
+
+```ini
+wifi_ssid     = my-network
+wifi_password = my-password
+owm_api_key   = 0123456789abcdef
+```
+
+One `key = value` per line; `#` and `;` start comments; `[sections]` are
+ignored; keys are case-insensitive; quote a value to keep leading or trailing
+spaces. The file is read once at boot and reported on serial by name and
+length only — values are never logged.
+
+**Compiled in** — copy the header template and rebuild:
 
 ```bash
 cp examples/pda2/config_keys.h.example examples/pda2/config_keys.h
 ```
 
-`config_keys.h` is **gitignored** — it holds real credentials and must not be committed.
+`config_keys.h` is **gitignored** — it holds real credentials and must not be
+committed.
 
-| Define | Needed for | Where to get it |
+**Precedence: the card wins.** Anything the `.ini` does not mention keeps the
+value compiled in, so adding a card file changes only the settings it names.
+Firmware with no keys at all still runs; apps that need a missing one say so.
+
+> The file server refuses to list, serve or delete `config_keys.ini`, since the
+> card is otherwise browsable by anyone who can reach the device. That is not a
+> substitute for physical care: anyone holding the card can read it.
+
+| `.ini` key / `.h` define | Needed for | Where to get it |
 |---|---|---|
-| `WIFI_SSID` / `WIFI_PASSWORD` | Weather, AI chat, file server, time sync | your network |
-| `WIFI_SSID2` / `WIFI_PASSWORD2` | optional second network | |
-| `OWM_API_KEY` | Weather app | [openweathermap.org](https://openweathermap.org/api) — One Call API 3.0 |
-| `GEMINI_API_KEY` | AI Chat | [aistudio.google.com](https://aistudio.google.com/) |
-| `CALENDARIFIC_API_KEY` | Public holidays in Calendar | [calendarific.com](https://calendarific.com/) |
-| `UBLOX_ASSISTNOW_TOKEN` | Faster first GPS fix | u-blox AssistNow (optional) |
+| `wifi_ssid`, `wifi_password` | Weather, AI Chat, Files, holidays, time sync | your network |
+| `owm_api_key` | Weather | [openweathermap.org](https://openweathermap.org/api) — One Call API 3.0 |
+| `gemini_api_key` | AI Chat | [aistudio.google.com](https://aistudio.google.com/) |
+| `calendarific_api_key` | Public holidays in Calendar | [calendarific.com](https://calendarific.com/) |
+| `calendar_countries` | Which countries' holidays — e.g. `US,CN` | — |
+| `ublox_assistnow_token` | Faster first GPS fix (optional) | u-blox AssistNow |
 
 Everything except WiFi is optional; apps that need a missing key say so rather than failing silently.
 
@@ -117,6 +144,7 @@ Format the card as **FAT32**. exFAT will not mount — this firmware's FatFs is 
 /music/         audio files             Music player
 /notes/         .md                     Notes
 /recordings/    written by the recorder
+config_keys.ini optional settings (see above)
 ```
 
 Directories are created on demand where the app writes; you only need to create the ones you're putting content into.
@@ -325,6 +353,7 @@ examples/pda2/
   ui_deckpro.cpp       home menu, screen manager, hardware pages
   ui_*.cpp             one file per app
   peri_*.cpp           peripheral drivers (GPS, keypad, LoRa, …)
+  app_config.*         settings from /config_keys.ini, with .h fallbacks
   power_mgr.*          reference-counted power rails
   lowpower_mgr.*       idle throttling
   garmin_img.*         Garmin .img map reader
@@ -357,6 +386,46 @@ UndefinedBehaviorSanitizer has caught real bugs this way (notably left-shifting 
 - **SD is at 4 MHz** (the Arduino default) and FatFs is built **without fast-seek**, so a backward seek in a large file restarts the FAT cluster walk from the beginning. Code that reads big files sorts its reads into ascending order for this reason.
 - **NVS is small.** The default partition is 20 KB — fine for settings, not for multi-kilobyte blobs. Those belong on the card.
 - **Use PSRAM for anything large** (`ps_malloc`); internal RAM is scarce.
+
+### Adding a setting
+
+Settings come from `/config_keys.ini` on the card, falling back to
+`config_keys.h`. Read them through `app_config.h` rather than the defines:
+
+```c
+#include "app_config.h"
+
+if (!cfg_has(CFG_OWM_KEY)) { /* tell the user what is missing */ }
+snprintf(url, sizeof(url), "...&appid=%s", cfg_get(CFG_OWM_KEY));
+```
+
+`cfg_get()` never returns NULL, so it is safe to pass straight to `printf`.
+`cfg_source()` reports `"sd"`, `"firmware"` or `"unset"` without revealing the
+value.
+
+To add one: define a `CFG_*` key name in `app_config.h`, add a row to
+`k_builtin[]` in `app_config.cpp` guarded by `#ifdef` on the matching
+`config_keys.h` define, and list it in both `config_keys.ini.example` and the
+table above.
+
+Two conventions worth keeping:
+
+- **Don't gate code on `#ifdef SOME_KEY`.** Those guards meant a build without
+  a key didn't compile the path at all, so it could rot unnoticed and the user
+  got a message naming a header they may not have. Runtime `cfg_has()` checks
+  compile every path and can name the card file instead.
+- **Never log a value.** `cfg_load()` prints key names and lengths only. A
+  serial log is easy to paste into a bug report.
+
+### Known gaps
+
+- `wifi_ssid2` / `wifi_password2` are accepted by the config layer and appear
+  in both templates, but nothing reads them — `power_mgr` only ever connects to
+  the primary network. Wiring up a fallback is a small change.
+- The map reader handles TRE and RGN but not LBL, so there are no map labels:
+  no contour elevations, place names or road names.
+- On-device unzipping of a map is capped at 6 MB uncompressed; larger archives
+  must be unzipped on a computer.
 
 ---
 

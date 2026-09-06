@@ -27,6 +27,19 @@ extern void shared_spi_unlock(void);
 extern void shared_spi_prepare_device(int cs_pin);
 extern bool sd_ensure_mounted(void);
 
+#include "app_config.h"
+
+/* The card is served to anyone who can reach the device, and the settings file
+ * holds a WiFi password and every API key. Hidden from listings and refused on
+ * download, delete and upload — a browsable filesystem should not be the way
+ * those leak. */
+static bool is_secret(const String &path)
+{
+    String p = path;
+    p.toLowerCase();
+    return p.endsWith("/config_keys.ini") || p == "config_keys.ini";
+}
+
 static WebServer s_server(80);
 static bool s_running = false;
 static char s_url[48] = "";
@@ -190,6 +203,7 @@ static void handle_list(void)
     while (e) {
         String name = base_name(String(e.name()));
         String child = path_join(path, name);
+        if (is_secret(child)) { e.close(); e = dir.openNextFile(); continue; }
         bool ed = e.isDirectory();
         uint32_t sz = ed ? 0 : (uint32_t)e.size();
         e.close();
@@ -219,6 +233,7 @@ static void handle_download(void)
 {
     if (!s_server.hasArg("path")) { s_server.send(400, "text/plain", "missing path"); return; }
     String path = s_server.arg("path");
+    if (is_secret(path)) { s_server.send(403, "text/plain", "Refused"); return; }
 
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);
@@ -241,6 +256,7 @@ static void handle_delete(void)
 {
     if (!s_server.hasArg("path")) { s_server.send(400, "text/plain", "missing path"); return; }
     String path = s_server.arg("path");
+    if (is_secret(path)) { s_server.send(403, "text/plain", "Refused"); return; }
     String parent = parent_dir(path);
 
     shared_spi_lock();
