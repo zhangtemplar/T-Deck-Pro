@@ -35,10 +35,16 @@ Built on top of LilyGo's factory example, which supplies the proven hardware dri
 | Display | 3.1″ e-paper, 240×320, monochrome (GDEQ031T10) |
 | Keyboard | TCA8418 4×10 matrix, with `sym` / `alt` / shift modifiers |
 | Touch | CST226SE capacitive |
-| Radios | WiFi, BLE, SX1262 LoRa, A7682E LTE modem |
+| Radios | WiFi, BLE, SX1262 LoRa, optional A7682E LTE modem |
 | Sensors | u-blox GNSS, BHI260AP IMU |
 | Power | BQ25896 charger, BQ27220 fuel gauge |
-| Other | DRV2605 haptics, PCM5102A audio out, PDM microphone, microSD |
+| Other | DRV2605 haptics, optional PCM5102A audio out, PDM microphone, microSD |
+
+The A7682E 4G board and PCM5102A audio board are different hardware variants,
+not two peripherals populated together. The 4G variant uses GPIO7/8/9 as modem
+sideband pins; the non-4G PCM5102A variant uses those same pins for I2S
+`BCLK`/`DOUT`/`LRC`. `BOARD_6609_EN` is likewise the modem rail on the 4G
+variant and the audio rail on the PCM5102A variant.
 
 The e-paper panel takes roughly **400 ms** for a full refresh. That single number shapes most of the UI: pages rather than smooth scrolling, no animations, no blinking cursors.
 
@@ -63,12 +69,19 @@ default_envs = T-Deck-Pro
 From the repository root:
 
 ```bash
-pio run                 # build
+pio run                 # build the default A7682E / 4G firmware
 pio run -t upload       # build and flash
 pio device monitor      # serial console at 115200 baud
 ```
 
 If `pio` isn't on your `PATH`, it usually lives at `~/.platformio/penv/bin/pio`.
+
+For the non-4G PCM5102A board, select the PCM environment:
+
+```bash
+pio run -e T-Deck-Pro-PCM5102A
+pio run -e T-Deck-Pro-PCM5102A -t upload
+```
 
 To build a different example, change `src_dir` in `platformio.ini`.
 

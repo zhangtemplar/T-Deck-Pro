@@ -176,7 +176,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_DAC
     m_i2s_config.bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT;
     m_i2s_config.channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT;
     m_i2s_config.intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1; // high interrupt priority
-    m_i2s_config.dma_buf_count        = 8;      // max buffers
+    m_i2s_config.dma_buf_count        = 32;     // ~0.7 s at 44.1 kHz stereo; bridges e-paper refresh
     m_i2s_config.dma_buf_len          = 1024;   // max value
     m_i2s_config.use_apll             = APLL_DISABLE; // must be disabled in V2.0.1-RC1
     m_i2s_config.tx_desc_auto_clear   = true;   // new in V1.0.1
@@ -4138,8 +4138,9 @@ bool Audio::playSample(int16_t sample[2]) {
         sample[RIGHTCHANNEL] = ((sample[RIGHTCHANNEL] & 0xff) -128) << 8;
     }
 
-    sample[LEFTCHANNEL]  = sample[LEFTCHANNEL]  >> 1; // half Vin so we can boost up to 6dB in filters
-    sample[RIGHTCHANNEL] = sample[RIGHTCHANNEL] >> 1;
+    // Use the full PCM range for external I2S DACs. The upstream library halves
+    // samples here to leave 6 dB of EQ headroom, but this firmware does not use
+    // positive EQ boost and the PCM5102A board needs the extra output level.
 
     // Filterchain, can commented out if not used
     sample = IIR_filterChain0(sample);

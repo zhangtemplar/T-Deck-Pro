@@ -219,9 +219,15 @@ static void start_voice_record()
     xTaskCreatePinnedToCore(ai_voice_task, "ai_voice", 16384, NULL, 5, &ai_task, 0);
 }
 
-static void ensure_audio_init()
+static bool ensure_audio_init()
 {
+#if !T_DECK_PRO_HAS_PCM5102A
+    Serial.println("[VoiceAI] PCM5102A audio output is not present on this build");
+    return false;
+#else
     Serial.println("[VoiceAI] Re-initializing audio...");
+    pinMode(BOARD_6609_EN, OUTPUT);
+    digitalWrite(BOARD_6609_EN, HIGH);
 
     /* The Audio library's internal I2S handle is stale after PDM recording.
      * We must install a basic I2S TX driver so setPinout has a valid handle.
@@ -232,8 +238,8 @@ static void ensure_audio_init()
     cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
     cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
     cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-    cfg.dma_buf_count = 8;
-    cfg.dma_buf_len = 1024;
+    cfg.dma_buf_count = BOARD_AUDIO_DMA_BUF_COUNT;
+    cfg.dma_buf_len = BOARD_AUDIO_DMA_BUF_LEN;
 
     esp_err_t err = i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
     Serial.printf("[VoiceAI] i2s_driver_install: %s\n", esp_err_to_name(err));
@@ -250,6 +256,8 @@ static void ensure_audio_init()
     audio.setPinout(BOARD_I2S_BCLK, BOARD_I2S_LRC, BOARD_I2S_DOUT);
     audio.setVolume(21);
     Serial.println("[VoiceAI] Audio re-initialized");
+    return true;
+#endif
 }
 
 static void start_tts()
@@ -268,7 +276,10 @@ static void start_tts()
     }
 
     Serial.println("[VoiceAI] TTS: ensuring audio init...");
-    ensure_audio_init();
+    if (!ensure_audio_init()) {
+        if (status_label) lv_label_set_text(status_label, "PCM5102A audio not present");
+        return;
+    }
     Serial.println("[VoiceAI] TTS: audio init done");
 
     /* Truncate to ~200 chars for TTS to reduce memory pressure */

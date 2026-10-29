@@ -112,9 +112,11 @@ void ui_setting_set_gyro_status(bool on)
 }
 void ui_setting_set_a7682_status(bool on)
 {
-    // enable 7682 module power
+    // enable the populated accessory rail
     digitalWrite(BOARD_6609_EN, on);
+#if T_DECK_PRO_HAS_A7682E
     digitalWrite(BOARD_A7682E_PWRKEY, on);
+#endif
     default_a7682_status = on;
 }
 
@@ -415,6 +417,10 @@ int ui_other_get_gyro(float *gyro_x, float *gyro_y, float *gyro_z)
 //************************************[ screen 8 ]****************************************** A7682E
 bool ui_a7682_at_cb(const char *at_cmd)
 {
+#if !T_DECK_PRO_HAS_A7682E
+    Serial.println("[A7682E] unavailable on PCM5102A board");
+    return false;
+#else
     printf("[A7682E] at cmd: %s\n", at_cmd);
 
     modem.sendAT("+CTTSPARAM=1,3,0,1,1");
@@ -424,32 +430,41 @@ bool ui_a7682_at_cb(const char *at_cmd)
     modem.sendAT("+CTTS=2,\"1234567890\"");
 
     return false;
+#endif
 }
 
 void ui_a7682_call(const char *number)
 {
+#if T_DECK_PRO_HAS_A7682E
     char buf[32];
     lv_snprintf(buf, 32, "D%s;", number);
     printf("[A7682E] at cmd: %s\n", buf);
 
     modem.sendAT(buf);
     delay(100);
+#endif
 }
 
 void ui_a7682_hang_up(void)
 {
+#if T_DECK_PRO_HAS_A7682E
     modem.sendAT("+CHUP");
     delay(100);
+#endif
 }
 
 void ui_a7682_loop_resume(void)
 {
-    vTaskResume(a7682_handle);
+#if T_DECK_PRO_HAS_A7682E
+    if (a7682_handle) vTaskResume(a7682_handle);
+#endif
 }
 
 void ui_a7682_loop_suspend(void)
 {
-    vTaskSuspend(a7682_handle);
+#if T_DECK_PRO_HAS_A7682E
+    if (a7682_handle) vTaskSuspend(a7682_handle);
+#endif
 }
 
 //************************************[ screen 9 ]****************************************** Input
@@ -464,13 +479,21 @@ void ui_shutdown_on(void)
 //************************************[ screen 10 ]****************************************** PCM5102
 bool ui_pcm5102_cb(const char *at_cmd)
 {
+#if !T_DECK_PRO_HAS_PCM5102A
+    Serial.println("[PCM5102A] unavailable on A7682E board");
+    return false;
+#else
+    pcm5102a_init();
     audio.connecttoFS(SPIFFS, "/iphone_call.mp3");
     return true;
+#endif
 }
 
 void ui_pcm5102_stop(void)
 {
+#if T_DECK_PRO_HAS_PCM5102A
     audio.stopSong();
+#endif
 }
 
 // optional

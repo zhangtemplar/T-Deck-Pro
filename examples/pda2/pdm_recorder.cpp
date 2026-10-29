@@ -60,6 +60,13 @@ static bool pdm_i2s_rx_install(int sample_rate)
 
 static bool pdm_i2s_tx_install(int sample_rate)
 {
+#if !T_DECK_PRO_HAS_PCM5102A
+    Serial.println("[PLAY] PCM5102A audio output is not present on this build");
+    return false;
+#else
+    pinMode(BOARD_6609_EN, OUTPUT);
+    digitalWrite(BOARD_6609_EN, HIGH);
+
     /* Always uninstall — Audio library or a prior call may hold I2S_NUM_0 */
     i2s_driver_uninstall(I2S_PORT);
     i2s_installed = false;
@@ -69,8 +76,8 @@ static bool pdm_i2s_tx_install(int sample_rate)
     cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
     cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
     cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-    cfg.dma_buf_count = 8;
-    cfg.dma_buf_len = 1024;
+    cfg.dma_buf_count = BOARD_AUDIO_DMA_BUF_COUNT;
+    cfg.dma_buf_len = BOARD_AUDIO_DMA_BUF_LEN;
     cfg.use_apll = false;
     if (i2s_driver_install(I2S_PORT, &cfg, 0, NULL) != ESP_OK) return false;
     i2s_pin_config_t pins = {};
@@ -84,6 +91,7 @@ static bool pdm_i2s_tx_install(int sample_rate)
     }
     i2s_installed = true;
     return true;
+#endif
 }
 
 static void pdm_i2s_uninstall(void)
@@ -378,7 +386,7 @@ static volatile bool play_stop_req = false;
 static volatile int  play_total_frames = 0;
 static volatile int  play_done_frames = 0;
 static volatile int  play_frame_ms = FRAME_MS;
-static volatile int  play_volume = 16;            /* 0..21 */
+static volatile int  play_volume = 21;            /* 0..21 */
 
 struct play_args_t { char path[80]; };
 

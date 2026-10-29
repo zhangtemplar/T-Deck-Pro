@@ -8,7 +8,8 @@
  *
  *  Playback uses ESP32-audioI2S (extern Audio audio; pumped by factory.ino's
  *  loop()), so audio keeps running across screen push/pop. Progress is refreshed
- *  at low cadence to limit e-ink ghosting. Synchronized lyrics are deferred.
+ *  at low cadence; the I2S DMA queue is sized to ride through e-paper refresh.
+ *  Synchronized lyrics are deferred.
  */
 #include "Arduino.h"
 #include "ui_deckpro.h"
@@ -26,7 +27,6 @@
 #define BROWSE_MAX        128
 #define MUSIC_PAGE_SIZE   5
 #define PROGRESS_TICKS    20        /* poll ticks (250ms) between progress updates -> ~5s */
-
 /* Browse entry kinds */
 enum { BR_DIR = 0, BR_AUDIO = 1, BR_M3U = 2 };
 
@@ -34,7 +34,7 @@ enum { BR_DIR = 0, BR_AUDIO = 1, BR_M3U = 2 };
 static char pl_paths[MUSIC_MAX_FILES][96];   /* playback queue, full SD paths */
 static int  pl_count = 0;
 static int  pl_index = -1;
-static uint8_t volume = 15;                  /* 0..21 */
+static uint8_t volume = 21;                  /* 0..21 */
 static bool paused = false;
 static bool was_running = false;             /* seen isRunning() true since last play */
 static bool last_play_ok = false;
@@ -68,16 +68,23 @@ static lv_obj_t *br_playall_btn = NULL;
 
 /* ============================ Helpers ============================ */
 
-static void ensure_audio_init()
+static bool ensure_audio_init()
 {
+#if !T_DECK_PRO_HAS_PCM5102A
+    Serial.println("[Music] PCM5102A audio output is not present on this build");
+    return false;
+#else
+    pinMode(BOARD_6609_EN, OUTPUT);
+    digitalWrite(BOARD_6609_EN, HIGH);
+
     i2s_config_t cfg = {};
     cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
     cfg.sample_rate = 44100;
     cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
     cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
     cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-    cfg.dma_buf_count = 8;
-    cfg.dma_buf_len = 1024;
+    cfg.dma_buf_count = BOARD_AUDIO_DMA_BUF_COUNT;
+    cfg.dma_buf_len = BOARD_AUDIO_DMA_BUF_LEN;
     i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL);
     i2s_pin_config_t pins = {};
     pins.bck_io_num = BOARD_I2S_BCLK;
@@ -85,8 +92,10 @@ static void ensure_audio_init()
     pins.data_out_num = BOARD_I2S_DOUT;
     pins.data_in_num = I2S_PIN_NO_CHANGE;
     i2s_set_pin(I2S_NUM_0, &pins);
-    audio.setPinout(BOARD_I2S_BCLK, BOARD_I2S_LRC, BOARD_I2S_DOUT);
+    bool ok = audio.setPinout(BOARD_I2S_BCLK, BOARD_I2S_LRC, BOARD_I2S_DOUT);
     audio.setVolume(volume);
+    return ok;
+#endif
 }
 
 static bool ext_is(const char *name, const char *ext3)
@@ -128,15 +137,17 @@ static void update_progress_label()
 {
     if (!np_time) return;
     char a[10], b[10];
+    char text[28];
     uint32_t cur = audio.getAudioCurrentTime();
     uint32_t dur = audio.getAudioFileDuration();
     fmt_mmss(a, sizeof(a), cur);
     if (dur > 0) {
         fmt_mmss(b, sizeof(b), dur);
-        lv_label_set_text_fmt(np_time, "%s / %s", a, b);
+        snprintf(text, sizeof(text), "%s / %s", a, b);
     } else {
-        lv_label_set_text_fmt(np_time, "%s / --:--", a);
+        snprintf(text, sizeof(text), "%s / --:--", a);
     }
+    if (strcmp(lv_label_get_text(np_time), text) != 0) lv_label_set_text(np_time, text);
 }
 
 static void now_playing_refresh()
@@ -172,10 +183,15 @@ static void play_index(int idx)
     pl_index = idx;
     paused = false;
     was_running = false;
+    progress_div = 0;
     id3_title[0] = id3_artist[0] = '\0';
 
     audio.stopSong();
-    ensure_audio_init();
+    if (!ensure_audio_init()) {
+        last_play_ok = false;
+        now_playing_refresh();
+        return;
+    }
     shared_spi_lock();
     shared_spi_prepare_device(BOARD_SD_CS);
     last_play_ok = audio.connecttoFS(SD, pl_paths[idx]);
@@ -272,14 +288,18 @@ static void next_cb(lv_event_t *e)
 static void vol_up_cb(lv_event_t *e)
 {
     if (volume < 21) volume++;
+#if T_DECK_PRO_HAS_PCM5102A
     audio.setVolume(volume);
+#endif
     if (np_vol) lv_label_set_text_fmt(np_vol, "Vol %d", volume);
 }
 
 static void vol_down_cb(lv_event_t *e)
 {
     if (volume > 0) volume--;
+#if T_DECK_PRO_HAS_PCM5102A
     audio.setVolume(volume);
+#endif
     if (np_vol) lv_label_set_text_fmt(np_vol, "Vol %d", volume);
 }
 
@@ -315,7 +335,8 @@ static void poll_cb(lv_timer_t *t)
         if (pl_count > 0) play_index((pl_index + 1) % pl_count);
     }
 
-    /* Low-cadence numeric progress to limit e-ink refreshes. */
+    /* Low-cadence numeric progress. The enlarged I2S DMA queue keeps playback
+     * fed while the e-paper controller is busy with this refresh. */
     if (++progress_div >= PROGRESS_TICKS) {
         progress_div = 0;
         if (pl_index >= 0) update_progress_label();

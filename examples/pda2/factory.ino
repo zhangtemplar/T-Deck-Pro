@@ -341,7 +341,10 @@ static void lvgl_init(void)
     // disp_drv.render_start_cb = dips_render_start_cb;
     disp_drv.draw_buf = &draw_buf_dsc_1;
     // disp_drv.rounder_cb = display_driver_rounder_cb;
-    disp_drv.full_refresh = 1;
+    /* Let LVGL flush only invalidated regions during normal updates. Explicit
+     * ui_disp_full_refr() calls still request full e-paper refreshes for page
+     * transitions, but progress text should not repaint the whole panel. */
+    disp_drv.full_refresh = 0;
 
     lv_disp_drv_register(&disp_drv);
 
@@ -508,6 +511,10 @@ static void a7682_task(void *param)
 
 static bool A7682E_init(void)
 {
+#if !T_DECK_PRO_HAS_A7682E
+    Serial.println("[A7682E] skipped (PCM5102A board variant)");
+    return false;
+#else
     Serial.println("Place your board outside to catch satelite signal");
 
     // Set module baud rate and UART pins
@@ -545,10 +552,18 @@ static bool A7682E_init(void)
     xTaskCreate(a7682_task, "a7682_handle", 1024 * 3, NULL, A7682E_PRIORITY, &a7682_handle);
 
     return (retry < retry_cnt);
+#endif
 }
 
 bool pcm5102a_init(void)
 {
+#if !T_DECK_PRO_HAS_PCM5102A
+    Serial.println("[PCM5102A] skipped (A7682E board variant)");
+    return false;
+#else
+    pinMode(BOARD_6609_EN, OUTPUT);
+    digitalWrite(BOARD_6609_EN, HIGH);
+
     bool ret = audio.setPinout(BOARD_I2S_BCLK, BOARD_I2S_LRC, BOARD_I2S_DOUT);
 
     if (ret == false) 
@@ -556,12 +571,10 @@ bool pcm5102a_init(void)
 
     audio.setVolume(21); // 0...21
 
-    pinMode(BOARD_6609_EN, OUTPUT);
-    digitalWrite(BOARD_6609_EN, HIGH);
-
     // audio_paly_flag = audio.connecttoFS(SD, "/voice_time/BBIBBI.mp3");
 
-    return true;
+    return ret;
+#endif
 }
 
 static void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
@@ -674,25 +687,38 @@ void setup()
     gpio_hold_dis((gpio_num_t)BOARD_6609_EN);
     gpio_hold_dis((gpio_num_t)BOARD_LORA_EN);
     gpio_hold_dis((gpio_num_t)BOARD_GPS_EN);
+#if T_DECK_PRO_HAS_A7682E
     gpio_hold_dis((gpio_num_t)BOARD_A7682E_PWRKEY);
+#endif
 
     gpio_deep_sleep_hold_dis();
 
     Serial.begin(115200);
+    Serial.printf("[HW] accessory variant: %s\n", T_DECK_PRO_ACCESSORY_NAME);
+#if T_DECK_PRO_HAS_PCM5102A
+    audio.setBufsize(BOARD_AUDIO_INPUT_BUF_RAM, BOARD_AUDIO_INPUT_BUF_PSRAM);
+    Serial.printf("[Audio] input buffer RAM=%u bytes PSRAM=%u bytes\n",
+                  (unsigned)BOARD_AUDIO_INPUT_BUF_RAM,
+                  (unsigned)BOARD_AUDIO_INPUT_BUF_PSRAM);
+#endif
 
     // IO
     pinMode(BOARD_KEYBOARD_LED, OUTPUT);
     pinMode(BOARD_MOTOR_PIN, OUTPUT);
-    pinMode(BOARD_6609_EN, OUTPUT);         // enable 7682 module
+    pinMode(BOARD_6609_EN, OUTPUT);         // accessory rail: A7682E or PCM5102A
     pinMode(BOARD_LORA_EN, OUTPUT);         // enable LORA module
     pinMode(BOARD_GPS_EN, OUTPUT);          // enable GPS module
+#if T_DECK_PRO_HAS_A7682E
     pinMode(BOARD_A7682E_PWRKEY, OUTPUT); 
+#endif
     digitalWrite(BOARD_KEYBOARD_LED, LOW);
     digitalWrite(BOARD_MOTOR_PIN, HIGH);
     digitalWrite(BOARD_6609_EN, HIGH);
     digitalWrite(BOARD_LORA_EN, HIGH);
     digitalWrite(BOARD_GPS_EN, HIGH);
+#if T_DECK_PRO_HAS_A7682E
     digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
+#endif
 
     pinMode(BOARD_EPD_BL, OUTPUT); 
     digitalWrite(BOARD_EPD_BL, HIGH);
@@ -797,12 +823,16 @@ void setup()
     cfg_load();
     peri_init_st[E_PERI_GPS]        = gps_init();
     peri_init_st[E_PERI_BHI260AP]   = BHI260AP_init();
+#if T_DECK_PRO_HAS_A7682E
     peri_init_st[E_PERI_A7682E]     = A7682E_init();
-
-    if(peri_init_st[E_PERI_A7682E] == false)
-    {
-        peri_init_st[E_PERI_PCM5102A] = pcm5102a_init();
-    }
+#else
+    peri_init_st[E_PERI_A7682E]     = false;
+#endif
+#if T_DECK_PRO_HAS_PCM5102A
+    peri_init_st[E_PERI_PCM5102A]   = pcm5102a_init();
+#else
+    peri_init_st[E_PERI_PCM5102A]   = false;
+#endif
 
     peri_init_st[E_PERI_TOUCH] = hyn_touch_init();
 
@@ -836,6 +866,12 @@ uint32_t tick = 0;
 
 void loop()
 {
+#if T_DECK_PRO_HAS_PCM5102A
+    if (audio.isRunning()) {
+        audio.loop();
+    }
+#endif
+
     epd_typing_throttle();
     lv_task_handler();
     keypad_loop();

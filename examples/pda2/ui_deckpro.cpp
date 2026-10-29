@@ -292,7 +292,11 @@ static struct menu_btn menu_btn_list[] =
     {SCREEN5_ID,             &img_test,       "Test"},
     {SCREEN6_ID,             &img_batt,       "Battery"},
     {SCREEN7_ID,             &img_touch,      "Input"},
+#if T_DECK_PRO_HAS_A7682E
     {SCREEN8_ID,             &img_A7682E,     "A7682E"},
+#else
+    {SCREEN10_ID,            &img_PCM5102,    "PCM5102"},
+#endif
     {SCREEN12_ID,            &img_motor,      "Motor"},
 };
 
@@ -1040,7 +1044,7 @@ static ui_setting_handle setting_handle_list[] = {
     {.name = "Power GPS",        .type=UI_SETTING_TYPE_SW,  .set_cb = ui_setting_set_gps_status,   .get_cb = ui_setting_get_gps_status},
     {.name = "Power Lora",       .type=UI_SETTING_TYPE_SW,  .set_cb = ui_setting_set_lora_status,  .get_cb = ui_setting_get_lora_status},
     {.name = "Power Gyro",       .type=UI_SETTING_TYPE_SW,  .set_cb = ui_setting_set_gyro_status,  .get_cb = ui_setting_get_gyro_status},
-    {.name = "Power A7682",      .type=UI_SETTING_TYPE_SW,  .set_cb = ui_setting_set_a7682_status, .get_cb = ui_setting_get_a7682_status},
+    {.name = T_DECK_PRO_ACCESSORY_POWER_LABEL, .type=UI_SETTING_TYPE_SW,  .set_cb = ui_setting_set_a7682_status, .get_cb = ui_setting_get_a7682_status},
     {.name = "- About System",   .type=UI_SETTING_TYPE_SUB, .sub_id = SCREEN2_1_ID},
 };
 
@@ -1647,8 +1651,11 @@ static ui_test_handle test_handle_list[] = {
     { .name="BQ25896",    .peri_id=E_PERI_BQ25896    , .cb=ui_test_get },
     { .name="BQ27220",    .peri_id=E_PERI_BQ27220    , .cb=ui_test_get },
     { .name="SD Card",    .peri_id=E_PERI_SD         , .cb=ui_test_get },
+#if T_DECK_PRO_HAS_A7682E
     { .name="A7682E",     .peri_id=E_PERI_A7682E     , .cb=ui_test_get },
+#else
     { .name="PCM5102A",   .peri_id=E_PERI_PCM5102A   , .cb=ui_test_get },
+#endif
     { .name="Keypad",     .peri_id=E_PERI_KYEPAD     , .cb=ui_test_get },
     { .name="GPS",        .peri_id=E_PERI_GPS        , .cb=ui_test_get },
     { .name="BHI260AP",   .peri_id=E_PERI_BHI260AP   , .cb=ui_test_get },
@@ -2464,11 +2471,15 @@ static void create8(lv_obj_t *parent)
 }
 static void entry8(void) 
 {
+#if T_DECK_PRO_HAS_A7682E
     power_acquire(PWR_MODEM);      /* A7682E LDO + power-on pulse */
+#endif
     ui_disp_full_refr();
 }
 static void exit8(void) {
+#if T_DECK_PRO_HAS_A7682E
     power_release(PWR_MODEM);
+#endif
     ui_disp_full_refr();
 }
 static void destroy8(void) { }
@@ -2897,7 +2908,9 @@ static void create11(lv_obj_t *parent)
     digitalWrite(BOARD_LORA_EN, LOW);
     digitalWrite(BOARD_GPS_EN, LOW);
     
+#if T_DECK_PRO_HAS_A7682E
     digitalWrite(BOARD_A7682E_PWRKEY, LOW);
+#endif
 
     // gpio_hold_en((gpio_num_t)BOARD_GPS_PPS);
     // gpio_hold_en((gpio_num_t)BOARD_TOUCH_RST);
@@ -2908,7 +2921,9 @@ static void create11(lv_obj_t *parent)
     gpio_hold_en((gpio_num_t)BOARD_6609_EN);
     gpio_hold_en((gpio_num_t)BOARD_LORA_EN);
     gpio_hold_en((gpio_num_t)BOARD_GPS_EN);
+#if T_DECK_PRO_HAS_A7682E
     gpio_hold_en((gpio_num_t)BOARD_A7682E_PWRKEY);
+#endif
     gpio_deep_sleep_hold_en();
 
     
@@ -3178,11 +3193,15 @@ void ui_deckpro_entry(void)
     scr_mgr_register(SCREEN6_1_ID,  &screen6_1);    //  - BQ25896
     scr_mgr_register(SCREEN6_2_ID,  &screen6_2);    //  - BQ27220
     scr_mgr_register(SCREEN7_ID,    &screen7);      // 
+#if T_DECK_PRO_HAS_A7682E
     scr_mgr_register(SCREEN8_ID,    &screen8);      // A7682E
     scr_mgr_register(SCREEN8_1_ID,  &screen8_1);    //  - Call test
     scr_mgr_register(SCREEN8_2_ID,  &screen8_2);    //  - AT test
+#endif
     scr_mgr_register(SCREEN9_ID,    &screen9);      // Shutdown
+#if T_DECK_PRO_HAS_PCM5102A
     scr_mgr_register(SCREEN10_ID,   &screen10);     // PCM5102
+#endif
     scr_mgr_register(SCREEN11_ID,   &screen11);
     scr_mgr_register(SCREEN12_ID,   &screen12);     // Motor
 

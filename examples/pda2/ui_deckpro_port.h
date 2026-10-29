@@ -142,8 +142,8 @@ void ui_a7682_loop_suspend(void);
 // shutdown
 void ui_shutdown_on(void);
 
-// [ screen 10 ] --- A7682E
-bool ui_pcm5102_cb(const char *at_cmd);void ui_pcm5102_stop(void);
+// [ screen 10 ] --- PCM5102A
+bool ui_pcm5102_cb(const char *at_cmd);
 void ui_pcm5102_stop(void);
 
 // [ screen 12 ] --- Motor

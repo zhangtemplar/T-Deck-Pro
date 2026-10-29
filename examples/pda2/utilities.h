@@ -12,6 +12,41 @@
 #define UI_T_DECK_PRO_VERSION    "v2.4-260320"  // Software version
 #define BOARD_T_DECK_PRO_VERSION "v2.0-250915"  // Hardware version
 
+/* T-Deck-Pro is sold in two mutually exclusive accessory variants:
+ *   - 4G version: A7682E modem. GPIO7/8/9 are modem sideband pins.
+ *   - non-4G version: PCM5102A DAC. GPIO7/8/9 are I2S BCLK/DOUT/LRC.
+ *
+ * The schematic names are left below for both variants because many upstream
+ * examples do the same, but firmware must only drive the side that is actually
+ * populated on the board. PlatformIO selects the variant; plain Arduino builds
+ * keep the historical A7682E default.
+ */
+#if !defined(T_DECK_PRO_HAS_A7682E) && !defined(T_DECK_PRO_HAS_PCM5102A)
+#define T_DECK_PRO_HAS_A7682E 1
+#endif
+
+#ifndef T_DECK_PRO_HAS_A7682E
+#define T_DECK_PRO_HAS_A7682E 0
+#endif
+#ifndef T_DECK_PRO_HAS_PCM5102A
+#define T_DECK_PRO_HAS_PCM5102A 0
+#endif
+
+#if T_DECK_PRO_HAS_A7682E && T_DECK_PRO_HAS_PCM5102A
+#error "Select only one T-Deck-Pro accessory variant: A7682E or PCM5102A."
+#endif
+#if !T_DECK_PRO_HAS_A7682E && !T_DECK_PRO_HAS_PCM5102A
+#error "Select a T-Deck-Pro accessory variant: A7682E or PCM5102A."
+#endif
+
+#if T_DECK_PRO_HAS_A7682E
+#define T_DECK_PRO_ACCESSORY_NAME "A7682E 4G"
+#define T_DECK_PRO_ACCESSORY_POWER_LABEL "Power A7682"
+#else
+#define T_DECK_PRO_ACCESSORY_NAME "PCM5102A audio"
+#define T_DECK_PRO_ACCESSORY_POWER_LABEL "Power Audio"
+#endif
+
 // Serial
 #define SerialMon   Serial      // 
 #define SerialAT    Serial1     // 
@@ -32,6 +67,15 @@
 #define BOARD_I2S_BCLK 7
 #define BOARD_I2S_DOUT 8
 #define BOARD_I2S_LRC 9
+/* I2S TX cushion for PCM5102A. E-paper refresh can block the foreground loop
+ * for a few hundred ms; a larger DMA queue lets already-decoded PCM continue
+ * while LVGL updates progress text. */
+#define BOARD_AUDIO_DMA_BUF_COUNT 32
+#define BOARD_AUDIO_DMA_BUF_LEN   1024
+/* ESP32-audioI2S compressed input buffer. PSRAM is used when available; RAM is
+ * only the fallback. This must be configured before the first connecttoFS(). */
+#define BOARD_AUDIO_INPUT_BUF_RAM   (32 * 1024)
+#define BOARD_AUDIO_INPUT_BUF_PSRAM (768 * 1024)
 
 // Keyboard
 #define BOARD_KEYBOARD_SCL BOARD_I2C_SCL
@@ -105,7 +149,7 @@
 
 // EN
 #define BOARD_GPS_EN  39  // enable GPS module
-#define BOARD_6609_EN 41  // enable 7682 module
+#define BOARD_6609_EN 41  // accessory rail: A7682E on 4G boards, PCM5102A on non-4G boards
 #define BOARD_LORA_EN 46  // enable LORA module
 
 // Mic

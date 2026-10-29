@@ -81,6 +81,7 @@ static bool rail_on(pwr_rail_t rail)
         return true;
 
     case PWR_MODEM:
+#if T_DECK_PRO_HAS_A7682E
         /* Bring the LDO up, then pulse PWRKEY the way setup() does. */
         digitalWrite(BOARD_6609_EN, HIGH);
         delay(100);
@@ -90,6 +91,10 @@ static bool rail_on(pwr_rail_t rail)
         delay(1000);
         digitalWrite(BOARD_A7682E_PWRKEY, LOW);
         return true;
+#else
+        Serial.println("[PWR] modem rail not present on PCM5102A board");
+        return false;
+#endif
 
     default:
         return false;
@@ -119,8 +124,10 @@ static void rail_off(pwr_rail_t rail)
         break;
 
     case PWR_MODEM:
+#if T_DECK_PRO_HAS_A7682E
         digitalWrite(BOARD_6609_EN, LOW);
         digitalWrite(BOARD_A7682E_PWRKEY, LOW);
+#endif
         break;
 
     default:
@@ -135,12 +142,17 @@ void power_mgr_init(void)
     for (int i = 0; i < PWR_RAIL_COUNT; i++) { s_refs[i] = 0; s_on[i] = false; s_off_at[i] = 0; }
 
     /* Everything down. setup() drives these pins high before we get here, so
-     * this is what actually turns the radios off after boot. */
+     * this is what actually turns the radios off after boot. On the PCM5102A
+     * board, BOARD_6609_EN is the DAC rail, not a modem rail, so keep it on. */
     gps_task_suspend();          /* don't poll a UART with no receiver behind it */
     digitalWrite(BOARD_GPS_EN, LOW);
     digitalWrite(BOARD_LORA_EN, LOW);
+#if T_DECK_PRO_HAS_A7682E
     digitalWrite(BOARD_6609_EN, LOW);
     digitalWrite(BOARD_A7682E_PWRKEY, LOW);
+#else
+    digitalWrite(BOARD_6609_EN, HIGH);
+#endif
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
